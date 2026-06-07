@@ -1,0 +1,18 @@
+{% extends "layout.html" %}
+{% block title %}登录 - Bastion Hub{% endblock %}
+{% block content %}
+<div class="card" style="max-width:360px; margin:80px auto;">
+    <h2 style="margin-top:0;">Bastion Hub</h2>
+    <form method="post" action="/api/auth/login">
+        <div class="form-row">
+            <label>用户名</label>
+            <input type="text" name="username" required autofocus>
+        </div>
+        <div class="form-row">
+            <label>密码</label>
+            <input type="password" name="password" required>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;">登录</button>
+    </form>
+</div>
+{% endblock %}

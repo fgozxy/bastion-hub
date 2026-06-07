@@ -1,0 +1,68 @@
+{% extends "layout.html" %}
+{% block title %}SSH 策略 - Bastion Hub{% endblock %}
+{% block content %}
+<div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2>SSH 策略</h2>
+    <button class="btn btn-primary" onclick="document.getElementById('add-form').style.display='block'">+ 添加策略</button>
+</div>
+
+<div id="add-form" class="card" style="display:none;">
+    <h3 style="margin-top:0;">添加策略</h3>
+    <form onsubmit="event.preventDefault(); addPolicy(this);">
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">
+            <div class="form-row"><label>策略名称</label><input name="name" required></div>
+            <div class="form-row"><label>模式</label>
+                <select name="mode">
+                    <option value="report">报告模式</option>
+                    <option value="enforce">强制模式</option>
+                </select>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">创建</button>
+        <button type="button" class="btn" onclick="document.getElementById('add-form').style.display='none'">取消</button>
+    </form>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr><th>名称</th><th>版本</th><th>模式</th><th>创建时间</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+            {% for p in policies %}
+            <tr>
+                <td><a href="/policies/{{ p.id }}">{{ p.name }}</a></td>
+                <td>{{ p.revision }}</td>
+                <td><span class="badge badge-{{ 'danger' if p.mode == 'enforce' else 'pending' }}">{{ '强制模式' if p.mode == 'enforce' else '报告模式' }}</span></td>
+                <td>{{ p.created_at[:19] }}</td>
+                <td>
+                    <a class="btn" href="/policies/{{ p.id }}">查看</a>
+                    <button class="btn btn-danger" onclick="deletePolicy({{ p.id }}, '{{ p.name|replace("'", "\\'") }}')">删除</button>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" style="color:var(--muted);">暂无策略</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+async function addPolicy(form) {
+    const data = Object.fromEntries(new FormData(form));
+    const res = await fetch('/api/policies', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(data)
+    });
+    if(res.ok) location.reload();
+    else alert('创建策略失败');
+}
+async function deletePolicy(id, name) {
+    if(!confirm('确定要删除策略 ' + name + ' 吗？')) return;
+    const res = await fetch('/api/policies/' + id, {method:'DELETE'});
+    if(res.ok) location.reload();
+    else alert('删除失败');
+}
+</script>
+{% endblock %}

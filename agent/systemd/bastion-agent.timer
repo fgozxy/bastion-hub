@@ -1,0 +1,9 @@
+[Unit]
+Description=Bastion Hub Agent Timer
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

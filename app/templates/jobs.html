@@ -1,0 +1,39 @@
+{% extends "layout.html" %}
+{% block title %}任务 - Bastion Hub{% endblock %}
+{% block content %}
+<h2>任务</h2>
+<div class="card">
+    <table>
+        <thead>
+            <tr><th>ID</th><th>类型</th><th>状态</th><th>优先级</th><th>重试次数</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+            {% for job in jobs %}
+            <tr>
+                <td>{{ job.id }}</td>
+                <td>{{ job.kind }}</td>
+                <td><span class="badge badge-{{ job.status }}">{{ job.status }}</span></td>
+                <td>{{ job.priority }}</td>
+                <td>{{ job.attempts }} / {{ job.max_attempts }}</td>
+                <td>{{ job.created_at[:19] }}</td>
+                <td>{{ job.updated_at[:19] }}</td>
+                <td>
+                    {% if job.status == 'failed' %}
+                    <button class="btn" onclick="retryJob({{ job.id }})">重试</button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" style="color:var(--muted);">暂无任务</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<script>
+async function retryJob(id) {
+    const res = await fetch('/api/jobs/'+id+'/retry', {method:'POST'});
+    if(res.ok) location.reload();
+    else alert('重试失败');
+}
+</script>
+{% endblock %}

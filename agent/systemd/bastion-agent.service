@@ -1,0 +1,9 @@
+[Unit]
+Description=Bastion Hub Agent
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/bastion-agent/agent.sh
+Environment=PANEL_BASE_URL=https://bastion.zlibza.com
+Environment=TOKEN_FILE=/var/lib/bastion-hub/node.token

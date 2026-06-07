@@ -1,0 +1,63 @@
+{% extends "layout.html" %}
+{% block title %}初始化节点 - Bastion Hub{% endblock %}
+{% block content %}
+<h2>初始化节点</h2>
+<div class="card">
+    <h3 style="margin-top:0;">生成初始化命令</h3>
+    <form method="post" action="/api/nodes">
+        <div class="form-row">
+            <label>主机名</label>
+            <input type="text" name="hostname" required placeholder="prod-hk-01">
+        </div>
+        <div class="form-row">
+            <label>角色</label>
+            <select name="role">
+                <option value="worker" selected>工作节点</option>
+                <option value="bastion">堡垒机</option>
+                <option value="primary">主节点</option>
+                <option value="backup">备份节点</option>
+                <option value="probe">探针</option>
+                <option value="line">线路</option>
+                <option value="edge">边缘</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label>环境</label>
+            <select name="env">
+                <option value="prod" selected>生产</option>
+                <option value="staging">预发布</option>
+                <option value="dev">开发</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label>安装配置</label>
+            <select name="profile">
+                <option value="minimal,docker">最小化 + Docker</option>
+                <option value="minimal,docker,build">最小化 + Docker + 构建</option>
+                <option value="minimal,docker,ops">最小化 + Docker + 运维</option>
+                <option value="minimal,docker,build,ops">完整</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label>Token 有效期（分钟）</label>
+            <input type="number" name="token_ttl" value="30" min="5" max="1440">
+        </div>
+        <button type="submit" class="btn btn-primary">生成命令</button>
+    </form>
+</div>
+
+{% if command %}
+<div class="card" style="margin-top:20px;">
+    <h3 style="margin-top:0;">在新节点上执行</h3>
+    <pre style="background:#0f1117; padding:12px; border-radius:6px; overflow:auto;"><code>{{ command }}</code></pre>
+    <button class="btn" onclick="copyCommand()">复制</button>
+    <script>
+    function copyCommand() {
+        const code = document.querySelector('code');
+        navigator.clipboard.writeText(code.innerText);
+        alert('已复制');
+    }
+    </script>
+</div>
+{% endif %}
+{% endblock %}

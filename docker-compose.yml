@@ -1,0 +1,37 @@
+services:
+  web:
+    build: .
+    container_name: bastion-hub-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/data
+      - ./app:/app/app
+      - ./agent:/app/agent
+      - ./data/ssh:/data/ssh:ro
+    env_file:
+      - .env.bastion
+    environment:
+      - APP_ENV=production
+      - DATABASE_URL=/data/bastion.db
+      - SSH_KEY_PATH=/data/ssh/bastion-hub
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+
+  worker:
+    build: .
+    container_name: bastion-hub-worker
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+      - ./app:/app/app
+      - ./agent:/app/agent
+      - ./data/ssh:/data/ssh:ro
+    env_file:
+      - .env.bastion
+    environment:
+      - APP_ENV=production
+      - DATABASE_URL=/data/bastion.db
+    command: python -m app.workers.runner
+    depends_on:
+      - web

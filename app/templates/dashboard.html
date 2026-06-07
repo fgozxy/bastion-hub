@@ -1,0 +1,52 @@
+{% extends "layout.html" %}
+{% block title %}仪表盘 - Bastion Hub{% endblock %}
+{% block content %}
+<h2>仪表盘</h2>
+<div class="grid">
+    <div class="card">
+        <div class="label">节点总数</div>
+        <div class="stat">{{ summary.total }}</div>
+    </div>
+    <div class="card">
+        <div class="label">在线</div>
+        <div class="stat" style="color:var(--ok);">{{ summary.online }}</div>
+    </div>
+    <div class="card">
+        <div class="label">离线</div>
+        <div class="stat" style="color:var(--danger);">{{ summary.offline }}</div>
+    </div>
+    <div class="card">
+        <div class="label">待初始化</div>
+        <div class="stat" style="color:var(--warn);">{{ summary.pending }}</div>
+    </div>
+    <div class="card">
+        <div class="label">策略未收敛</div>
+        <div class="stat" style="color:var(--warn);">{{ summary.unconverged }}</div>
+    </div>
+    <div class="card">
+        <div class="label">最近心跳</div>
+        <div class="stat">{{ summary.recent_online }}</div>
+    </div>
+</div>
+
+<div class="card">
+    <h3 style="margin-top:0;">最近任务</h3>
+    <table>
+        <thead>
+            <tr><th>ID</th><th>类型</th><th>状态</th><th>创建时间</th></tr>
+        </thead>
+        <tbody>
+            {% for job in recent_jobs %}
+            <tr>
+                <td>{{ job.id }}</td>
+                <td>{{ job.kind }}</td>
+                <td><span class="badge badge-{{ job.status }}">{{ job.status }}</span></td>
+                <td>{{ job.created_at[:19] }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" style="color:var(--muted);">暂无任务</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

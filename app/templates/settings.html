@@ -1,0 +1,312 @@
+{% extends "layout.html" %}
+{% block title %}设置 - Bastion Hub{% endblock %}
+{% block content %}
+<h2>设置</h2>
+<div class="grid">
+    <div class="card">
+        <h3 style="margin-top:0;">通用</h3>
+        <div class="label">面板地址</div>
+        <div>{{ settings.panel_base_url }}</div>
+        <div class="label" style="margin-top:12px;">运行环境</div>
+        <div>{{ settings.app_env }}</div>
+    </div>
+    <div class="card">
+        <h3 style="margin-top:0;">GitHub 集成</h3>
+        <div id="gh-status" style="margin-bottom:12px;">
+            <span class="badge badge-warn">加载中...</span>
+        </div>
+        <div class="form-row"><label>GitHub Token</label><input type="password" id="gh-token" placeholder="ghp_... 或 Fine-grained token"></div>
+        <div class="form-row"><label>Webhook Secret</label><input type="password" id="gh-secret" placeholder="用于验证 GitHub Webhook 签名"></div>
+        <div class="form-row">
+            <label>备份目标仓库</label>
+            <select id="gh-backup-repo">
+                <option value="">选择仓库用于配置备份</option>
+            </select>
+            <div style="font-size:12px;color:var(--muted);margin-top:4px;">节点配置（Compose、策略、地址等）将备份到此仓库的 nodes/ 目录</div>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+            <button class="btn" onclick="testGitHub()">测试连接</button>
+            <button class="btn btn-primary" onclick="saveGitHub()">保存</button>
+            <button class="btn" onclick="syncRepos()">同步仓库列表</button>
+            <button class="btn" onclick="triggerBackup()">立即备份</button>
+        </div>
+        <div id="gh-repos-status" style="margin-top:8px; font-size:13px; color:var(--muted);"></div>
+        <div id="gh-backup-status" style="margin-top:8px; font-size:13px; color:var(--muted);"></div>
+        <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--border);">
+            <div class="label">Webhook URL</div>
+            <div style="font-size:13px; word-break:break-all;">https://bastion.zlibza.com/api/github/webhook</div>
+            <div class="label" style="margin-top:8px;">配置步骤</div>
+            <ol style="font-size:13px; color:var(--muted); padding-left:16px; margin:4px 0;">
+                <li>创建 Token：<a href="https://github.com/settings/personal-access-tokens/new" target="_blank">Fine-grained</a> 或 <a href="https://github.com/settings/tokens/new" target="_blank">Classic</a></li>
+                <li>填写 Token 和 Webhook Secret，保存</li>
+                <li>在仓库 Settings → Webhooks 添加上方 URL</li>
+                <li>点击"同步仓库列表"拉取仓库到面板缓存</li>
+                <li>选择"备份目标仓库"并保存</li>
+                <li>点击"立即备份"测试配置备份</li>
+            </ol>
+        </div>
+    </div>
+    <div class="card">
+        <h3 style="margin-top:0;">Cloudflare IP List</h3>
+        <div id="cf-status" style="margin-bottom:12px;"><span class="badge badge-warn">加载中...</span></div>
+        <div class="form-row"><label>Account ID</label><input type="text" id="cf-account-id" placeholder="Cloudflare Account ID"></div>
+        <div class="form-row"><label>API Token</label><input type="password" id="cf-token" placeholder="具有 Account:Edit 权限的 Token"></div>
+        <div class="form-row"><label>IPv4 List 名称</label><input type="text" id="cf-list-ipv4" value="bastion_nodes_ipv4"></div>
+        <div class="form-row"><label>IPv6 List 名称</label><input type="text" id="cf-list-ipv6" value="bastion_nodes_ipv6"></div>
+        <div class="form-row">
+            <label>同步模式</label>
+            <select id="cf-mode">
+                <option value="add_only">仅新增（首次上线推荐）</option>
+                <option value="managed_delete">允许删除 managed IP</option>
+                <option value="grace_period">Grace period 删除</option>
+            </select>
+        </div>
+        <div class="form-row"><label>删除保护天数</label><input type="number" id="cf-grace-days" value="7" min="0"></div>
+        <div class="form-row">
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                <input type="checkbox" id="cf-enabled"> 启用 Cloudflare 同步
+            </label>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+            <button class="btn" onclick="testCloudflare()">测试连接</button>
+            <button class="btn btn-primary" onclick="saveCloudflare()">保存</button>
+            <button class="btn" onclick="syncCloudflare(true)">Dry-run 同步</button>
+            <button class="btn" onclick="syncCloudflare(false)">立即同步</button>
+        </div>
+        <div id="cf-sync-status" style="margin-top:8px; font-size:13px; color:var(--muted);"></div>
+        <div style="margin-top:16px;">
+            <div class="label">最近同步记录</div>
+            <table style="font-size:12px; width:100%;">
+                <thead><tr><th>时间</th><th>类型</th><th>期望/实际</th><th>新增/删除</th><th>模式</th></tr></thead>
+                <tbody id="cf-logs"></tbody>
+            </table>
+        </div>
+    </div>
+    <div class="card">
+        <h3 style="margin-top:0;">其他集成</h3>
+        <div class="label">探针</div>
+        <div class="badge badge-warn">未配置</div>
+    </div>
+</div>
+
+<script>
+async function loadSettings() {
+    const res = await fetch('/api/github/settings');
+    const d = await res.json();
+    const statusEl = document.getElementById('gh-status');
+    if(d.configured) {
+        statusEl.innerHTML = '<span class="badge badge-online">已配置</span> Token: ' + (d.token_masked || '***');
+    } else {
+        statusEl.innerHTML = '<span class="badge badge-warn">未配置</span>';
+    }
+    if(d.backup_repo) {
+        document.getElementById('gh-backup-repo').dataset.selected = d.backup_repo;
+    }
+    loadRepoCount();
+    loadReposForSelect();
+    loadCloudflareSettings();
+    loadCloudflareLogs();
+}
+async function loadRepoCount() {
+    try {
+        const res = await fetch('/api/github/repos');
+        const d = await res.json();
+        const el = document.getElementById('gh-repos-status');
+        if(Array.isArray(d)) {
+            el.textContent = '已缓存仓库: ' + d.length + ' 个';
+        } else if(d.repos) {
+            el.textContent = '已缓存仓库: ' + d.repos.length + ' 个';
+        }
+    } catch(e) {}
+}
+async function loadReposForSelect() {
+    try {
+        const res = await fetch('/api/github/repos');
+        const d = await res.json();
+        const repos = Array.isArray(d) ? d : (d.repos || []);
+        const select = document.getElementById('gh-backup-repo');
+        const selected = select.dataset.selected || '';
+        // 保留第一个选项
+        select.innerHTML = '<option value="">选择仓库用于配置备份</option>';
+        for(const r of repos) {
+            const opt = document.createElement('option');
+            opt.value = r.full_name;
+            opt.textContent = r.full_name;
+            if(r.full_name === selected) opt.selected = true;
+            select.appendChild(opt);
+        }
+    } catch(e) {}
+}
+async function testGitHub() {
+    const res = await fetch('/api/github/test', {method:'POST'});
+    const d = await res.json();
+    if(d.ok) {
+        alert('连接成功！用户: ' + d.login);
+    } else {
+        alert('连接失败: ' + (d.detail || '未知错误'));
+    }
+}
+async function saveGitHub() {
+    const data = {
+        token: document.getElementById('gh-token').value || null,
+        webhook_secret: document.getElementById('gh-secret').value || null,
+        enabled: true,
+        backup_repo: document.getElementById('gh-backup-repo').value || null,
+    };
+    const res = await fetch('/api/github/settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    });
+    if(res.ok) {
+        alert('保存成功');
+        loadSettings();
+    } else {
+        alert('保存失败');
+    }
+}
+async function syncRepos() {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = '同步中...';
+    btn.disabled = true;
+    try {
+        const res = await fetch('/api/github/sync-repos', {method:'POST'});
+        const d = await res.json();
+        if(res.ok) {
+            alert('同步成功！共 ' + (d.count || 0) + ' 个仓库');
+            loadRepoCount();
+            loadReposForSelect();
+        } else {
+            alert('同步失败: ' + (d.detail || '未知错误'));
+        }
+    } catch(e) {
+        alert('同步出错: ' + e.message);
+    } finally {
+        btn.textContent = orig;
+        btn.disabled = false;
+    }
+}
+async function loadCloudflareSettings() {
+    try {
+        const res = await fetch('/api/cloudflare/settings');
+        const d = await res.json();
+        const statusEl = document.getElementById('cf-status');
+        if(d.enabled) {
+            statusEl.innerHTML = '<span class="badge badge-online">已启用</span> Account: ' + (d.account_id || '-');
+        } else {
+            statusEl.innerHTML = '<span class="badge badge-warn">未启用</span>';
+        }
+        document.getElementById('cf-account-id').value = d.account_id || '';
+        document.getElementById('cf-list-ipv4').value = d.list_name_ipv4 || 'bastion_nodes_ipv4';
+        document.getElementById('cf-list-ipv6').value = d.list_name_ipv6 || 'bastion_nodes_ipv6';
+        document.getElementById('cf-mode').value = d.mode || 'add_only';
+        document.getElementById('cf-grace-days').value = d.delete_grace_days || 7;
+        document.getElementById('cf-enabled').checked = !!d.enabled;
+    } catch(e) {}
+}
+async function loadCloudflareLogs() {
+    try {
+        const res = await fetch('/api/cloudflare/sync-logs?limit=10');
+        const d = await res.json();
+        const tbody = document.getElementById('cf-logs');
+        tbody.innerHTML = '';
+        const logs = d.logs || [];
+        if(logs.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted);">暂无记录</td></tr>';
+            return;
+        }
+        for(const row of logs) {
+            const tr = document.createElement('tr');
+            const time = row.created_at ? row.created_at.replace('T',' ').substring(0,19) : '-';
+            const mode = row.dry_run ? ' [dry-run]' : '';
+            tr.innerHTML = '<td>' + time + '</td><td>' + row.kind + mode + '</td><td>' + (row.desired_count||0) + '/' + (row.actual_count||0) + '</td><td>' + (row.added_count||0) + '/' + (row.removed_count||0) + '</td><td>' + row.mode + '</td>';
+            tbody.appendChild(tr);
+        }
+    } catch(e) {
+        document.getElementById('cf-logs').innerHTML = '<tr><td colspan="5" style="color:var(--muted);">加载失败</td></tr>';
+    }
+}
+async function testCloudflare() {
+    const res = await fetch('/api/cloudflare/test', {method:'POST'});
+    const d = await res.json();
+    if(d.ok) {
+        alert('连接成功！');
+    } else {
+        alert('连接失败: ' + (d.detail || '未知错误'));
+    }
+}
+async function saveCloudflare() {
+    const data = {
+        account_id: document.getElementById('cf-account-id').value,
+        api_token: document.getElementById('cf-token').value || null,
+        list_name_ipv4: document.getElementById('cf-list-ipv4').value || 'bastion_nodes_ipv4',
+        list_name_ipv6: document.getElementById('cf-list-ipv6').value || 'bastion_nodes_ipv6',
+        mode: document.getElementById('cf-mode').value,
+        delete_grace_days: parseInt(document.getElementById('cf-grace-days').value) || 7,
+        enabled: document.getElementById('cf-enabled').checked,
+    };
+    const res = await fetch('/api/cloudflare/settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    });
+    if(res.ok) {
+        alert('保存成功');
+        loadCloudflareSettings();
+    } else {
+        const d = await res.json();
+        alert('保存失败: ' + (d.detail || '未知错误'));
+    }
+}
+async function syncCloudflare(dryRun) {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = dryRun ? 'Dry-run 中...' : '同步中...';
+    btn.disabled = true;
+    const statusEl = document.getElementById('cf-sync-status');
+    statusEl.textContent = '';
+    try {
+        const res = await fetch('/api/cloudflare/sync?dry_run=' + (dryRun ? 'true' : 'false'), {method:'POST'});
+        const d = await res.json();
+        if(d.ok) {
+            statusEl.innerHTML = '<span style="color:var(--success);">任务已创建 (Job #' + d.job_id + ')</span>';
+            alert('同步任务已创建，请在任务列表查看结果');
+        } else {
+            statusEl.innerHTML = '<span style="color:var(--danger);">失败: ' + (d.detail || '未知错误') + '</span>';
+        }
+    } catch(e) {
+        statusEl.innerHTML = '<span style="color:var(--danger);">出错: ' + e.message + '</span>';
+    } finally {
+        btn.textContent = orig;
+        btn.disabled = false;
+    }
+}
+async function triggerBackup() {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = '备份中...';
+    btn.disabled = true;
+    const statusEl = document.getElementById('gh-backup-status');
+    statusEl.textContent = '';
+    try {
+        const res = await fetch('/api/github/backup', {method:'POST'});
+        const d = await res.json();
+        if(res.ok) {
+            statusEl.innerHTML = '<span style="color:var(--success);">备份成功: ' + d.backed_up + '/' + d.total + ' 个节点</span>';
+            if(d.errors && d.errors.length) {
+                statusEl.innerHTML += '<br>失败: ' + d.errors.map(e => e.hostname + '(' + e.error + ')').join(', ');
+            }
+        } else {
+            statusEl.innerHTML = '<span style="color:var(--danger);">备份失败: ' + (d.detail || '未知错误') + '</span>';
+        }
+    } catch(e) {
+        statusEl.innerHTML = '<span style="color:var(--danger);">备份出错: ' + e.message + '</span>';
+    } finally {
+        btn.textContent = orig;
+        btn.disabled = false;
+    }
+}
+loadSettings();
+</script>
+{% endblock %}

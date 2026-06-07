@@ -1,0 +1,480 @@
+{% extends "layout.html" %}
+{% block title %}节点 - Bastion Hub{% endblock %}
+{% block content %}
+<div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2>节点</h2>
+    <button class="btn btn-primary" onclick="document.getElementById('add-form').style.display='block'">+ 添加节点</button>
+</div>
+
+<div id="add-form" class="card" style="display:none;">
+    <h3 style="margin-top:0;">添加节点</h3>
+    <form method="post" action="/api/nodes" onsubmit="event.preventDefault(); addNode(this);">
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:12px;">
+            <div class="form-row"><label>节点名称</label><input name="name" required></div>
+            <div class="form-row"><label>角色</label>
+                <select name="role">
+                    <option value="worker">工作节点</option>
+                    <option value="bastion">堡垒机</option>
+                    <option value="primary">主节点</option>
+                    <option value="backup">备份节点</option>
+                    <option value="probe">探针</option>
+                    <option value="line">线路</option>
+                    <option value="edge">边缘</option>
+                </select>
+            </div>
+            <div class="form-row"><label>环境</label>
+                <select name="env">
+                    <option value="prod">生产</option>
+                    <option value="staging">预发布</option>
+                    <option value="dev">开发</option>
+                </select>
+            </div>
+            <div class="form-row"><label>提供商</label><input name="provider"></div>
+            <div class="form-row"><label>区域</label><input name="region"></div>
+            <div class="form-row"><label>SSH 用户</label><input name="ssh_user" value="root"></div>
+            <div class="form-row"><label>SSH 端口</label><input name="ssh_port" type="number" value="22"></div>
+        </div>
+        <button type="submit" class="btn btn-primary">创建</button>
+        <button type="button" class="btn" onclick="document.getElementById('add-form').style.display='none'">取消</button>
+    </form>
+</div>
+
+<div id="batch-bar" class="card" style="display:none; position:sticky; top:0; z-index:10; background:var(--card); margin-bottom:12px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <span style="font-size:14px; font-weight:500;">已选中 <span id="batch-count">0</span> 个节点</span>
+        <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+            <button class="btn" onclick="batchRefreshAddresses()">刷新地址</button>
+            <button class="btn" onclick="batchRefreshCompose()">刷新 Compose</button>
+            <input list="batch-backup-repo-list" id="batch-backup-repo" placeholder="备份仓库(留空用默认)" style="font-size:13px; padding:4px 8px; width:160px;">
+            <datalist id="batch-backup-repo-list">
+                {% for repo in github_repos %}
+                <option value="{{ repo.full_name }}">
+                {% endfor %}
+            </datalist>
+            <button class="btn" onclick="batchBackup()">批量备份</button>
+            <button class="btn" onclick="batchApplyPolicy()">应用策略</button>
+            <button class="btn" onclick="batchEdit()">批量编辑</button>
+            <button class="btn btn-danger" onclick="batchDelete()">批量删除</button>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:32px;"><input type="checkbox" id="select-all" onclick="toggleSelectAll()"></th>
+                <th>主机名</th>
+                <th>角色</th>
+                <th>环境</th>
+                <th>状态</th>
+                <th>公网 IPv4</th>
+                <th>公网 IPv6</th>
+                <th>策略</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% set role_map = {'worker':'工作节点','bastion':'堡垒机','primary':'主节点','backup':'备份节点','probe':'探针','line':'线路','edge':'边缘'} %}
+            {% set env_map = {'prod':'生产','staging':'预发布','dev':'开发'} %}
+            {% set status_map = {'online':'在线','offline':'离线','pending':'待初始化','disabled':'禁用'} %}
+            {% for node in nodes %}
+            <tr>
+                <td><input type="checkbox" class="node-select" value="{{ node.id }}" onchange="updateBatchBar()"></td>
+                <td>
+                    <a href="/nodes/{{ node.id }}">{{ node.display_name or node.hostname }}</a>
+                    {% if node.display_name %}<div style="font-size:12px;color:var(--muted);">{{ node.hostname }}</div>{% endif %}
+                </td>
+                <td>{{ role_map[node.role] if node.role in role_map else node.role }}</td>
+                <td>{{ env_map[node.env] if node.env in env_map else node.env }}</td>
+                <td><span class="badge badge-{{ node.status }}">{{ status_map[node.status] if node.status in status_map else node.status }}</span></td>
+                <td>
+                    {% set pub4 = node.addresses | selectattr('family','eq','ipv4') | selectattr('scope','eq','public') | map(attribute='address') | unique | list %}
+                    {{ pub4 | join('<br>') | safe }}
+                </td>
+                <td>
+                    {% set pub6 = node.addresses | selectattr('family','eq','ipv6') | selectattr('scope','eq','public') | map(attribute='address') | unique | list %}
+                    {{ pub6 | join('<br>') | safe }}
+                </td>
+                <td style="font-size:12px;">
+                    {% if node.policy_id %}
+                        {% set policy = policies | selectattr('id','eq',node.policy_id) | list | first %}
+                        {% if policy %}
+                            <span class="badge badge-{{ 'ok' if node.desired_policy_revision == node.applied_policy_revision else 'warn' }}">
+                                {{ '已收敛' if node.desired_policy_revision == node.applied_policy_revision else '未收敛' }}
+                            </span>
+                            <div style="color:var(--muted);">{{ policy.name }}</div>
+                            <div style="color:var(--muted);">D{{ node.desired_policy_revision }}/A{{ node.applied_policy_revision }}</div>
+                        {% else %}
+                            <span class="badge badge-warn">策略不存在</span>
+                        {% endif %}
+                    {% else %}
+                        <span class="badge badge-disabled">未应用</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <a class="btn" href="/nodes/{{ node.id }}">查看</a>
+                    <button class="btn" onclick="editNode({{ node.id }}, '{{ node.hostname|replace("'", "\\'") }}', '{{ (node.display_name or '')|replace("'", "\\'") }}', '{{ node.role }}', '{{ node.env }}', '{{ (node.provider or '')|replace("'", "\\'") }}', '{{ (node.region or '')|replace("'", "\\'") }}', '{{ node.ssh_user }}', {{ node.ssh_port }}, '{{ node.status }}')">编辑</button>
+                    <button class="btn" onclick="genBootstrap({{ node.id }})">初始</button>
+                    <button class="btn btn-danger" onclick="deleteNode({{ node.id }}, '{{ node.hostname|replace("'", "\\'") }}')">删</button>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="9" style="color:var(--muted);">暂无节点</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div id="batch-edit-modal" class="card" style="display:none;">
+    <h3 style="margin-top:0;">批量编辑节点</h3>
+    <form onsubmit="event.preventDefault(); saveBatchEdit();">
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:12px;">
+            <div class="form-row"><label>角色</label>
+                <select id="batch-role">
+                    <option value="">不变</option>
+                    <option value="worker">工作节点</option>
+                    <option value="bastion">堡垒机</option>
+                    <option value="primary">主节点</option>
+                    <option value="backup">备份节点</option>
+                    <option value="probe">探针</option>
+                    <option value="line">线路</option>
+                    <option value="edge">边缘</option>
+                </select>
+            </div>
+            <div class="form-row"><label>环境</label>
+                <select id="batch-env">
+                    <option value="">不变</option>
+                    <option value="prod">生产</option>
+                    <option value="staging">预发布</option>
+                    <option value="dev">开发</option>
+                </select>
+            </div>
+            <div class="form-row"><label>SSH 端口</label><input id="batch-ssh_port" type="number" placeholder="不变"></div>
+            <div class="form-row"><label>状态</label>
+                <select id="batch-status">
+                    <option value="">不变</option>
+                    <option value="online">在线</option>
+                    <option value="offline">离线</option>
+                    <option value="disabled">禁用</option>
+                </select>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">保存</button>
+        <button type="button" class="btn" onclick="document.getElementById('batch-edit-modal').style.display='none'">取消</button>
+    </form>
+</div>
+
+<div id="batch-policy-modal" class="card" style="display:none;">
+    <h3 style="margin-top:0;">批量应用策略</h3>
+    <p style="color:var(--muted); font-size:13px;">选择要应用的策略：</p>
+    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+        {% for p in policies %}
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px; padding:4px 8px; border:1px solid var(--border); border-radius:6px;">
+            <input type="radio" name="batch-policy-id" value="{{ p.id }}">
+            {{ p.name }} <span class="badge badge-{{ 'danger' if p.mode == 'enforce' else 'pending' }}">{{ p.mode }}</span>
+        </label>
+        {% endfor %}
+    </div>
+    <button class="btn btn-primary" onclick="saveBatchPolicy()">应用</button>
+    <button class="btn" onclick="document.getElementById('batch-policy-modal').style.display='none'">取消</button>
+</div>
+
+<div id="edit-modal" class="card" style="display:none;">
+    <h3 style="margin-top:0;">编辑节点</h3>
+    <form id="edit-form" onsubmit="event.preventDefault(); saveEdit();">
+        <input type="hidden" id="edit-id">
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:12px;">
+            <div class="form-row"><label>节点名称</label><input id="edit-display_name"></div>
+            <div class="form-row"><label>角色</label>
+                <select id="edit-role">
+                    <option value="worker">工作节点</option>
+                    <option value="bastion">堡垒机</option>
+                    <option value="primary">主节点</option>
+                    <option value="backup">备份节点</option>
+                    <option value="probe">探针</option>
+                    <option value="line">线路</option>
+                    <option value="edge">边缘</option>
+                </select>
+            </div>
+            <div class="form-row"><label>环境</label>
+                <select id="edit-env">
+                    <option value="prod">生产</option>
+                    <option value="staging">预发布</option>
+                    <option value="dev">开发</option>
+                </select>
+            </div>
+            <div class="form-row"><label>提供商</label><input id="edit-provider"></div>
+            <div class="form-row"><label>区域</label><input id="edit-region"></div>
+            <div class="form-row"><label>SSH 用户</label><input id="edit-ssh_user"></div>
+            <div class="form-row"><label>SSH 端口</label><input id="edit-ssh_port" type="number"></div>
+            <div class="form-row"><label>状态</label>
+                <select id="edit-status">
+                    <option value="pending">待初始化</option>
+                    <option value="online">在线</option>
+                    <option value="offline">离线</option>
+                    <option value="disabled">禁用</option>
+                </select>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">保存</button>
+        <button type="button" class="btn" onclick="document.getElementById('edit-modal').style.display='none'">取消</button>
+    </form>
+</div>
+
+<div id="bootstrap-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:100; align-items:center; justify-content:center;">
+    <div class="card" style="width:90%; max-width:640px; max-height:90vh; overflow:auto;">
+        <h3 style="margin-top:0;">初始化节点</h3>
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:12px;">
+            <div class="form-row">
+                <label>安装配置</label>
+                <select id="bootstrap-profile">
+                    <option value="minimal,docker">最小化 + Docker</option>
+                    <option value="minimal,docker,build">最小化 + Docker + 构建</option>
+                    <option value="minimal,docker,ops">最小化 + Docker + 运维</option>
+                    <option value="minimal,docker,build,ops">完整</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <label>Token 有效期（分钟）</label>
+                <input id="bootstrap-ttl" type="number" value="30" min="5" max="1440">
+            </div>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:12px;">
+            <button class="btn btn-primary" onclick="doGenerateBootstrap()">生成命令</button>
+            <button class="btn" onclick="document.getElementById('bootstrap-modal').style.display='none'">关闭</button>
+        </div>
+        <div id="bootstrap-result" style="display:none; margin-top:16px;">
+            <label style="font-size:13px; color:var(--muted);">在新节点上执行</label>
+            <pre style="background:#0f1117; padding:12px; border-radius:6px; overflow:auto; margin-top:4px;"><code id="bootstrap-command"></code></pre>
+            <button class="btn" onclick="copyBootstrapCmd()" style="margin-top:8px;">复制命令</button>
+        </div>
+    </div>
+</div>
+
+<script>
+async function addNode(form) {
+    const data = Object.fromEntries(new FormData(form));
+    data.ssh_port = parseInt(data.ssh_port);
+    data.hostname = data.name;
+    data.display_name = data.name;
+    delete data.name;
+    const res = await fetch('/api/nodes', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(data)
+    });
+    if(res.ok) location.reload();
+    else alert('创建节点失败');
+}
+let bootstrapNodeId = null;
+function genBootstrap(id) {
+    bootstrapNodeId = id;
+    document.getElementById('bootstrap-profile').value = 'minimal,docker';
+    document.getElementById('bootstrap-ttl').value = '30';
+    document.getElementById('bootstrap-result').style.display = 'none';
+    document.getElementById('bootstrap-modal').style.display = 'flex';
+}
+async function doGenerateBootstrap() {
+    if(!bootstrapNodeId) return;
+    const profile = document.getElementById('bootstrap-profile').value;
+    const ttl = parseInt(document.getElementById('bootstrap-ttl').value) || 30;
+    const res = await fetch('/api/nodes/'+bootstrapNodeId+'/bootstrap', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({profile, token_ttl_minutes: ttl})
+    });
+    const d = await res.json();
+    if(res.ok) {
+        document.getElementById('bootstrap-command').textContent = d.command;
+        document.getElementById('bootstrap-result').style.display = 'block';
+    } else {
+        alert('生成命令失败: ' + (d.detail || '未知错误'));
+    }
+}
+function copyBootstrapCmd() {
+    const text = document.getElementById('bootstrap-command').textContent;
+    navigator.clipboard.writeText(text).then(() => alert('已复制到剪贴板'));
+}
+function editNode(id, hostname, display_name, role, env, provider, region, ssh_user, ssh_port, status) {
+    document.getElementById('edit-id').value = id;
+    document.getElementById('edit-display_name').value = display_name || hostname;
+    document.getElementById('edit-role').value = role;
+    document.getElementById('edit-env').value = env;
+    document.getElementById('edit-provider').value = provider;
+    document.getElementById('edit-region').value = region;
+    document.getElementById('edit-ssh_user').value = ssh_user;
+    document.getElementById('edit-ssh_port').value = ssh_port;
+    document.getElementById('edit-status').value = status;
+    document.getElementById('edit-modal').style.display = 'block';
+}
+async function saveEdit() {
+    const id = document.getElementById('edit-id').value;
+    const data = {
+        display_name: document.getElementById('edit-display_name').value || null,
+        role: document.getElementById('edit-role').value,
+        env: document.getElementById('edit-env').value,
+        provider: document.getElementById('edit-provider').value || null,
+        region: document.getElementById('edit-region').value || null,
+        ssh_user: document.getElementById('edit-ssh_user').value,
+        ssh_port: parseInt(document.getElementById('edit-ssh_port').value),
+        status: document.getElementById('edit-status').value,
+    };
+    const res = await fetch('/api/nodes/' + id, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    });
+    if(res.ok) {
+        document.getElementById('edit-modal').style.display = 'none';
+        location.reload();
+    } else {
+        alert('保存失败');
+    }
+}
+async function deleteNode(id, hostname) {
+    if(!confirm('确定要删除节点 ' + hostname + ' 吗？')) return;
+    const res = await fetch('/api/nodes/' + id, {method:'DELETE'});
+    if(res.ok) location.reload();
+    else alert('删除失败');
+}
+
+function toggleSelectAll() {
+    const checked = document.getElementById('select-all').checked;
+    document.querySelectorAll('.node-select').forEach(cb => cb.checked = checked);
+    updateBatchBar();
+}
+function updateBatchBar() {
+    const checked = document.querySelectorAll('.node-select:checked');
+    const count = checked.length;
+    document.getElementById('batch-count').textContent = count;
+    document.getElementById('batch-bar').style.display = count > 0 ? 'block' : 'none';
+}
+function getSelectedNodeIds() {
+    return Array.from(document.querySelectorAll('.node-select:checked')).map(cb => parseInt(cb.value));
+}
+
+async function batchDelete() {
+    const ids = getSelectedNodeIds();
+    if(!confirm('确定要删除选中的 ' + ids.length + ' 个节点吗？')) return;
+    const res = await fetch('/api/nodes/batch-delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({node_ids: ids})
+    });
+    if(res.ok) location.reload();
+    else alert('批量删除失败');
+}
+
+async function batchRefreshAddresses() {
+    const ids = getSelectedNodeIds();
+    const res = await fetch('/api/nodes/batch-refresh-addresses', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({node_ids: ids})
+    });
+    const d = await res.json();
+    if(res.ok) {
+        const ok = d.results.filter(r => r.ok).length;
+        alert('地址刷新完成: ' + ok + '/' + d.results.length + ' 成功');
+        location.reload();
+    } else {
+        alert('批量刷新地址失败');
+    }
+}
+
+async function batchRefreshCompose() {
+    const ids = getSelectedNodeIds();
+    const res = await fetch('/api/nodes/batch-refresh-compose', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({node_ids: ids})
+    });
+    const d = await res.json();
+    if(res.ok) {
+        const ok = d.results.filter(r => r.ok).length;
+        alert('Compose 刷新完成: ' + ok + '/' + d.results.length + ' 成功');
+        location.reload();
+    } else {
+        alert('批量刷新 Compose 失败');
+    }
+}
+
+function batchApplyPolicy() {
+    document.getElementById('batch-policy-modal').style.display = 'block';
+}
+async function saveBatchPolicy() {
+    const selected = document.querySelector('input[name="batch-policy-id"]:checked');
+    if(!selected) {
+        alert('请选择一个策略');
+        return;
+    }
+    const ids = getSelectedNodeIds();
+    const res = await fetch('/api/nodes/batch-apply-policy', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({node_ids: ids, policy_id: parseInt(selected.value)})
+    });
+    const d = await res.json();
+    if(res.ok) {
+        alert('已应用到 ' + d.applied + ' 个节点');
+        document.getElementById('batch-policy-modal').style.display = 'none';
+        location.reload();
+    } else {
+        alert('应用失败: ' + (d.detail || '未知错误'));
+    }
+}
+
+function batchEdit() {
+    document.getElementById('batch-edit-modal').style.display = 'block';
+}
+async function saveBatchEdit() {
+    const ids = getSelectedNodeIds();
+    const data = {node_ids: ids};
+    const role = document.getElementById('batch-role').value;
+    const env = document.getElementById('batch-env').value;
+    const ssh_port = document.getElementById('batch-ssh_port').value;
+    const status = document.getElementById('batch-status').value;
+    if(role) data.role = role;
+    if(env) data.env = env;
+    if(ssh_port) data.ssh_port = parseInt(ssh_port);
+    if(status) data.status = status;
+    const res = await fetch('/api/nodes/batch-update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    });
+    const d = await res.json();
+    if(res.ok) {
+        alert('已更新 ' + d.updated + ' 个节点');
+        document.getElementById('batch-edit-modal').style.display = 'none';
+        location.reload();
+    } else {
+        alert('批量更新失败: ' + (d.detail || '未知错误'));
+    }
+}
+async function batchBackup() {
+    const ids = getSelectedNodeIds();
+    if(ids.length === 0) {
+        alert('请先选择节点');
+        return;
+    }
+    const repo = document.getElementById('batch-backup-repo').value.trim() || undefined;
+    const repoHint = repo ? '到 ' + repo : '到默认仓库';
+    if(!confirm('确定要备份选中的 ' + ids.length + ' 个节点 ' + repoHint + ' 吗？')) return;
+    const body = {node_ids: ids};
+    if(repo) body.backup_repo = repo;
+    const res = await fetch('/api/github/batch-backup', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    });
+    const d = await res.json();
+    if(res.ok) {
+        alert('备份完成: ' + d.backed_up + '/' + d.total + ' 个节点成功\n仓库: ' + d.repo + (d.errors.length ? '\n失败: ' + d.errors.map(e => e.hostname).join(', ') : ''));
+    } else {
+        alert('批量备份失败: ' + (d.detail || '未知错误'));
+    }
+}
+</script>
+{% endblock %}

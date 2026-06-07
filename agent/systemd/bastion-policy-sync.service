@@ -1,0 +1,9 @@
+[Unit]
+Description=Bastion Hub Policy Sync
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/bastion-agent/policy-apply.sh
+Environment=PANEL_BASE_URL=https://bastion.zlibza.com
+Environment=TOKEN_FILE=/var/lib/bastion-hub/node.token

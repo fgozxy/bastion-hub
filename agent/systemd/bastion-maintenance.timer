@@ -1,0 +1,9 @@
+[Unit]
+Description=Bastion Hub Maintenance Timer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+
+[Install]
+WantedBy=timers.target

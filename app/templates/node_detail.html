@@ -1,0 +1,374 @@
+{% extends "layout.html" %}
+{% block title %}{{ node.display_name or node.hostname }} - Bastion Hub{% endblock %}
+{% block content %}
+<h2>{{ node.display_name or node.hostname }} <span class="badge badge-{{ node.status }}">{{ node.status }}</span></h2>
+{% if node.display_name %}<div style="font-size:14px;color:var(--muted);margin-bottom:12px;">主机名: {{ node.hostname }}</div>{% endif %}
+
+<div class="grid">
+    <div class="card">
+        <div class="label">UUID</div>
+        <div style="font-size:12px; word-break:break-all;">{{ node.uuid }}</div>
+    </div>
+    <div class="card">
+        <div class="label">角色 / 环境</div>
+        <div>{{ node.role }} / {{ node.env }}</div>
+    </div>
+    <div class="card">
+        <div class="label">SSH</div>
+        <div>{{ node.ssh_user }}@{{ node.hostname }}:{{ node.ssh_port }}</div>
+    </div>
+    <div class="card">
+        <div class="label">策略版本</div>
+        <div>
+            {% if policy %}
+                <a href="/policies/{{ policy.id }}">{{ policy.name }}</a>
+                <span class="badge badge-{{ 'ok' if node.applied_policy_revision == node.desired_policy_revision else 'warn' }}">
+                    {{ '已收敛' if node.applied_policy_revision == node.desired_policy_revision else '未收敛' }}
+                </span>
+            {% else %}
+                未绑定策略
+            {% endif %}
+        </div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px;">
+            已应用 {{ node.applied_policy_revision }} / 期望 {{ node.desired_policy_revision }}
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3 style="margin-top:0;">节点自维护</h3>
+    {% set latest_maintenance = maintenance_logs | first %}
+    {% if latest_maintenance %}
+        {% set report = (latest_maintenance.report_json | fromjson) if latest_maintenance.report_json else {} %}
+        <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">上次检查: {{ latest_maintenance.checked_at[:19] }}</div>
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap:8px; font-size:13px;">
+            <div>
+                <div class="label">磁盘</div>
+                <div>
+                    {% set disk = report.disk | first %}
+                    {% if disk %}{{ disk.used_percent }}% ({{ disk.mount }}){% else %}-{% endif %}
+                </div>
+            </div>
+            <div>
+                <div class="label">内存</div>
+                <div>{{ report.memory.used_percent if report.memory else '-' }}%</div>
+            </div>
+            <div>
+                <div class="label">负载</div>
+                <div>{{ report.load.load_1min if report.load else '-' }}</div>
+            </div>
+            <div>
+                <div class="label">僵尸进程</div>
+                <div>{{ report.zombie_processes or 0 }}</div>
+            </div>
+            <div>
+                <div class="label">系统更新</div>
+                <div>{{ report.updates_available or 0 }} 个</div>
+            </div>
+        </div>
+        {% set warnings = (latest_maintenance.warnings_json | fromjson) if latest_maintenance.warnings_json else [] %}
+        {% if warnings %}
+        <div style="margin-top:8px;">
+            {% for w in warnings %}
+            <div style="font-size:12px; color:var(--danger);">⚠ {{ w }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    {% else %}
+        <div style="color:var(--muted); font-size:13px;">暂无维护记录</div>
+    {% endif %}
+</div>
+
+{% set pub_addrs = node.addresses | selectattr('scope','eq','public') | list %}
+{% set pri_addrs = node.addresses | selectattr('scope','eq','private') | list %}
+{% set pub4_addrs = pub_addrs | selectattr('family','eq','ipv4') | map(attribute='address') | unique | list %}
+{% set pub6_addrs = pub_addrs | selectattr('family','eq','ipv6') | map(attribute='address') | unique | list %}
+{% set pri4_addrs = pri_addrs | selectattr('family','eq','ipv4') | map(attribute='address') | unique | list %}
+{% set pri6_addrs = pri_addrs | selectattr('family','eq','ipv6') | map(attribute='address') | unique | list %}
+
+<div class="card">
+    <h3 style="margin-top:0; display:flex; justify-content:space-between; align-items:center;">
+        公网地址
+        <button class="btn" onclick="refreshAddresses({{ node.id }})">更新地址</button>
+    </h3>
+    {% if pub_addrs %}
+    <table>
+        <thead><tr><th>类型</th><th>地址</th><th>网卡</th></tr></thead>
+        <tbody>
+            {% for a in pub4_addrs %}
+            <tr><td>IPv4</td><td>{{ a }}</td><td>eth0</td></tr>
+            {% endfor %}
+            {% for a in pub6_addrs %}
+            <tr><td>IPv6</td><td>{{ a }}</td><td>eth0</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div style="color:var(--muted);">无公网地址</div>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h3 style="margin-top:0; display:flex; justify-content:space-between; align-items:center;">
+        内网地址
+        <span style="font-size:12px; font-weight:normal; color:var(--muted);">{{ pri4_addrs | length + pri6_addrs | length }} 条</span>
+    </h3>
+    {% if pri_addrs %}
+    <details>
+        <summary style="color:var(--muted); cursor:pointer; font-size:13px;">展开查看</summary>
+        <table style="margin-top:8px;">
+            <thead><tr><th>类型</th><th>地址</th><th>来源</th><th>网卡</th></tr></thead>
+            <tbody>
+                {% for a in pri_addrs %}
+                <tr><td>{{ a.family }}</td><td>{{ a.address }}</td><td>{{ a.source }}</td><td>{{ a.interface or '-' }}</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </details>
+    {% else %}
+    <div style="color:var(--muted);">无内网地址</div>
+    {% endif %}
+</div>
+
+{% if docker %}
+<div class="card">
+    <h3 style="margin-top:0;">Docker 快照</h3>
+    <div class="grid">
+        <div><div class="label">可用</div><div>{{ '是' if docker.docker_available else '否' }}</div></div>
+        <div><div class="label">Docker 版本</div><div>{{ docker.docker_version or '-' }}</div></div>
+        <div><div class="label">Compose 版本</div><div>{{ docker.compose_version or '-' }}</div></div>
+        <div><div class="label">容器</div><div>{{ docker.containers_running }} / {{ docker.containers_total }}</div></div>
+        <div><div class="label">镜像</div><div>{{ docker.images_total }}</div></div>
+        <div><div class="label">网络</div><div>{{ docker.networks_total }}</div></div>
+        <div><div class="label">卷</div><div>{{ docker.volumes_total }}</div></div>
+    </div>
+</div>
+{% endif %}
+
+<!-- 配置备份 -->
+<div class="card">
+    <h3 style="margin-top:0; display:flex; justify-content:space-between; align-items:center;">
+        <span>配置备份</span>
+        <button class="btn" onclick="backupNode({{ node.id }})">立即备份此节点</button>
+    </h3>
+    <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:12px; margin-bottom:12px;">
+        <div class="form-row">
+            <label>备份仓库</label>
+            <input list="backup-repo-list" id="backup-repo-input" placeholder="默认仓库" style="width:100%;">
+            <datalist id="backup-repo-list">
+                {% for repo in github_repos %}
+                <option value="{{ repo.full_name }}">
+                {% endfor %}
+            </datalist>
+            <div style="font-size:12px; color:var(--muted); margin-top:4px;">留空使用设置中的默认仓库</div>
+        </div>
+        <div><div class="label">备份路径</div><div>nodes/{{ node.hostname or 'node-' + node.id|string }}.json</div></div>
+        <div><div class="label">备份状态</div><div id="backup-status">-</div></div>
+    </div>
+</div>
+
+{% if credential_bindings %}
+<div class="card">
+    <h3 style="margin-top:0;">已绑定凭证</h3>
+    <table>
+        <thead>
+            <tr><th>凭证</th><th>目标用户</th><th>指纹</th><th>下发状态</th><th>应用时间</th></tr>
+        </thead>
+        <tbody>
+            {% for cb in credential_bindings %}
+            <tr>
+                <td><a href="/credentials/{{ cb.credential_id }}">{{ cb.credential_name }}</a></td>
+                <td>{{ cb.target_user }}</td>
+                <td style="font-size:12px; color:var(--muted);">{{ cb.fingerprint or '-' }}</td>
+                <td><span class="badge badge-{{ cb.status }}">{{ cb.status }}</span></td>
+                <td>{{ (cb.applied_at or '')[:19] or '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if compose_projects %}
+<div class="card">
+    <h3 style="margin-top:0; display:flex; justify-content:space-between; align-items:center;">
+        <span>Compose 项目</span>
+        <div style="display:flex; gap:8px;">
+            <button class="btn" onclick="refreshCompose({{ node.id }})">立即刷新</button>
+        </div>
+    </h3>
+
+    <!-- 批量操作栏 -->
+    <div id="batch-bar" style="display:none; margin-bottom:12px; padding:8px; background:var(--bg-secondary); border-radius:6px; align-items:center; gap:8px;">
+        <span style="font-size:13px;">已选 <b id="batch-count">0</b> 项</span>
+        <button class="btn btn-primary" style="font-size:12px; padding:4px 10px;" onclick="batchUpdate()">批量更新</button>
+        <button class="btn" style="font-size:12px; padding:4px 10px;" onclick="batchSetAutoUpdate(true)">批量开启自动更新</button>
+        <button class="btn" style="font-size:12px; padding:4px 10px;" onclick="batchSetAutoUpdate(false)">批量关闭自动更新</button>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th><input type="checkbox" id="select-all" onclick="toggleSelectAll()"></th>
+                <th>名称</th>
+                <th>路径</th>
+                <th>状态</th>
+                <th>更新状态</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for proj in compose_projects %}
+            <tr>
+                <td><input type="checkbox" class="compose-check" data-project-name="{{ proj.name | forceescape }}" onclick="updateBatchBar()"></td>
+                <td>{{ proj.name }}</td>
+                <td style="font-size:12px; word-break:break-all;">{{ proj.project_path or '-' }}</td>
+                <td><span class="badge badge-{{ proj.status }}">{{ proj.status | compose_status_cn }}</span></td>
+                <td style="font-size:12px; color:var(--muted);">
+                    <span class="badge badge-{{ 'ok' if proj.auto_update else 'disabled' }}" style="font-size:11px;">自动更新: {{ '开' if proj.auto_update else '关' }}</span>
+                    {% if proj.git_branch %}<br>{{ proj.git_branch }} @ {{ (proj.current_revision or '')[:8] }}{% endif %}
+                </td>
+                <td>
+                    <button class="btn" style="font-size:12px; padding:4px 8px;" onclick="updateProject({{ proj.name | tojson | forceescape }}, null)">更新</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<script>
+async function refreshAddresses(id) {
+    const res = await fetch('/api/nodes/' + id + '/refresh-addresses', {method:'POST'});
+    const d = await res.json();
+    if(res.ok) {
+        location.reload();
+    } else {
+        alert('更新失败');
+    }
+}
+async function refreshCompose(id) {
+    const res = await fetch('/api/nodes/' + id + '/refresh-compose', {method:'POST'});
+    const d = await res.json();
+    if(d.ok) {
+        location.reload();
+    } else {
+        alert(d.message || '刷新失败');
+    }
+}
+// Batch selection
+function toggleSelectAll() {
+    const checked = document.getElementById('select-all').checked;
+    document.querySelectorAll('.compose-check').forEach(cb => cb.checked = checked);
+    updateBatchBar();
+}
+
+function updateBatchBar() {
+    const checked = document.querySelectorAll('.compose-check:checked');
+    const bar = document.getElementById('batch-bar');
+    document.getElementById('batch-count').textContent = checked.length;
+    bar.style.display = checked.length > 0 ? 'flex' : 'none';
+}
+
+async function batchUpdate() {
+    const checked = document.querySelectorAll('.compose-check:checked');
+    const names = Array.from(checked).map(cb => cb.dataset.projectName);
+    if(names.length === 0) return;
+
+    let success = 0, failed = 0;
+    for(const name of names) {
+        const res = await fetch('/api/nodes/{{ node.id }}/deploy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({compose_project_name: name})
+        });
+        const d = await res.json();
+        if(d.ok) success++;
+        else failed++;
+    }
+    alert('批量更新完成: ' + success + ' 成功, ' + failed + ' 失败');
+    location.reload();
+}
+
+async function batchSetAutoUpdate(enabled) {
+    const checked = document.querySelectorAll('.compose-check:checked');
+    const names = Array.from(checked).map(cb => cb.dataset.projectName);
+    if(names.length === 0) return;
+    const res = await fetch('/api/nodes/{{ node.id }}/compose-projects/batch-auto-update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({names: names, auto_update: enabled})
+    });
+    const d = await res.json();
+    if(res.ok) {
+        alert('已更新 ' + d.updated + ' 个项目');
+        location.reload();
+    } else {
+        alert('批量设置失败: ' + (d.detail || '未知错误'));
+    }
+}
+
+async function updateProject(projectName, bindingId) {
+    const body = bindingId ? {binding_id: bindingId} : {compose_project_name: projectName};
+    const res = await fetch('/api/nodes/{{ node.id }}/deploy', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    });
+    const d = await res.json();
+    if(d.ok) {
+        alert('更新任务已创建 (Job #' + d.job_id + ')，请稍后查看任务列表');
+    } else {
+        alert('更新失败: ' + (d.detail || '未知错误'));
+    }
+}
+async function backupNode(nodeId) {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = '备份中...';
+    btn.disabled = true;
+    document.getElementById('backup-status').textContent = '备份中...';
+    const repo = document.getElementById('backup-repo-input').value.trim() || undefined;
+    try {
+        const body = repo ? JSON.stringify({backup_repo: repo}) : '{}';
+        const res = await fetch('/api/github/backup-node/' + nodeId, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: body
+        });
+        const d = await res.json();
+        if(res.ok) {
+            document.getElementById('backup-status').innerHTML = '<span style="color:var(--success);">备份成功 (' + d.repo + ')</span>';
+            alert('备份成功: ' + d.backed_up + '/' + d.total + ' 个节点\n仓库: ' + d.repo);
+        } else {
+            document.getElementById('backup-status').innerHTML = '<span style="color:var(--danger);">备份失败: ' + (d.detail || '未知错误') + '</span>';
+            alert('备份失败: ' + (d.detail || '未知错误'));
+        }
+    } catch(e) {
+        document.getElementById('backup-status').innerHTML = '<span style="color:var(--danger);">备份出错: ' + e.message + '</span>';
+        alert('备份出错: ' + e.message);
+    } finally {
+        btn.textContent = orig;
+        btn.disabled = false;
+    }
+}
+// Load backup repo name on page load
+(async function(){
+    try {
+        const res = await fetch('/api/github/settings');
+        const d = await res.json();
+        const el = document.getElementById('backup-repo-name');
+        if(d.backup_repo) {
+            el.textContent = d.backup_repo;
+            el.innerHTML = '<a href="https://github.com/' + d.backup_repo + '" target="_blank">' + d.backup_repo + '</a>';
+        } else {
+            el.textContent = '未配置';
+            el.style.color = 'var(--muted)';
+        }
+    } catch(e) {
+        document.getElementById('backup-repo-name').textContent = '加载失败';
+    }
+})();
+</script>
+{% endblock %}

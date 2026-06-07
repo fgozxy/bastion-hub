@@ -1,0 +1,147 @@
+{% extends "layout.html" %}
+{% block title %}{{ policy.name }} - SSH 策略{% endblock %}
+{% block content %}
+<h2>{{ policy.name }} <span class="badge badge-{{ 'danger' if policy.mode == 'enforce' else 'pending' }}">{{ '强制模式' if policy.mode == 'enforce' else '报告模式' }}</span></h2>
+<div style="font-size:14px;color:var(--muted);">版本: {{ policy.revision }} | 创建: {{ policy.created_at[:19] }}</div>
+
+<div class="card">
+    <h3 style="margin-top:0;">编辑策略</h3>
+    <form id="edit-form" onsubmit="event.preventDefault(); savePolicy();">
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">
+            <div class="form-row"><label>策略名称</label><input id="p-name" value="{{ policy.name }}"></div>
+            <div class="form-row"><label>模式</label>
+                <select id="p-mode">
+                    <option value="report" {{ 'selected' if policy.mode == 'report' else '' }}>报告模式</option>
+                    <option value="enforce" {{ 'selected' if policy.mode == 'enforce' else '' }}>强制模式</option>
+                </select>
+            </div>
+            <div class="form-row" style="grid-column:1/-1"><label>TrustedUserCAKeys (公钥)</label><textarea id="p-ca" rows="3">{{ policy.trusted_user_ca_public_key or '' }}</textarea></div>
+            <div class="form-row"><label>Allowed Principals (JSON 数组)</label><input id="p-principals" value='{{ policy.allowed_principals_json or "[]" }}'></div>
+            <div class="form-row"><label>Allowed Source CIDRs (JSON 数组)</label><input id="p-cidrs" value='{{ policy.allowed_source_cidrs_json or "[]" }}'></div>
+            <div class="form-row" style="grid-column:1/-1"><label>sshd_config (JSON)</label><textarea id="p-sshd" rows="4">{{ policy.sshd_config_json or '{}' }}</textarea></div>
+            <div class="form-row" style="grid-column:1/-1"><label>firewall_config (JSON)</label><textarea id="p-fw" rows="3">{{ policy.firewall_config_json or '{}' }}</textarea></div>
+            <div class="form-row" style="grid-column:1/-1"><label>docker_config (JSON)</label><textarea id="p-docker" rows="4">{{ policy.docker_config_json or '{}' }}</textarea></div>
+            <div class="form-row" style="grid-column:1/-1">
+                <label>Agent 自更新配置 (JSON)
+                    <button type="button" class="btn" style="font-size:12px;padding:2px 8px;margin-left:8px;" onclick="calcChecksums()">自动计算当前脚本 checksum</button>
+                </label>
+                <textarea id="p-agent" rows="6">{{ policy.agent_config_json or '{}' }}</textarea>
+                <div id="agent-config-hint" style="font-size:12px;color:var(--muted);margin-top:4px;">
+                    示例: {"auto_update":true,"version":"v1.0.0","scripts":{"agent.sh":"sha256:abc...","policy-apply.sh":"sha256:def...","maintenance.sh":"sha256:ghi..."}}
+                </div>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">保存（版本+1）</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3 style="margin-top:0;">应用到节点</h3>
+    <p style="color:var(--muted); font-size:13px;">选择节点后点击应用，节点会收到新的 desired_policy_revision 并在下次心跳时拉取策略。</p>
+    {% if nodes %}
+    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+        {% for n in nodes %}
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px; padding:4px 8px; border:1px solid var(--border); border-radius:6px;">
+            <input type="checkbox" class="node-check" value="{{ n.id }}">
+            {{ n.display_name or n.hostname }}
+        </label>
+        {% endfor %}
+    </div>
+    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-bottom:12px; font-size:13px;">
+        <input type="checkbox" id="auto-gen-key" checked>
+        同时生成并下发 root 登录密钥（仅对没有 root 凭证的节点生效）
+    </label>
+    <button class="btn btn-primary" onclick="applyPolicy()">应用策略到选中节点</button>
+    {% else %}
+    <div style="color:var(--muted);">暂无节点</div>
+    {% endif %}
+</div>
+
+<div id="keys-modal" class="card" style="display:none;">
+    <h3 style="margin-top:0; color:var(--ok);">✅ 策略已应用，请保存以下私钥</h3>
+    <p style="color:var(--danger); font-size:13px;">私钥仅显示一次，页面刷新后将无法再次查看！</p>
+    <div id="keys-list"></div>
+    <button class="btn" onclick="document.getElementById('keys-modal').style.display='none'">我已保存</button>
+</div>
+
+<script>
+async function savePolicy() {
+    const data = {
+        name: document.getElementById('p-name').value,
+        mode: document.getElementById('p-mode').value,
+        trusted_user_ca_public_key: document.getElementById('p-ca').value || null,
+        allowed_principals: JSON.parse(document.getElementById('p-principals').value || '[]'),
+        allowed_source_cidrs: JSON.parse(document.getElementById('p-cidrs').value || '[]'),
+        sshd_config: JSON.parse(document.getElementById('p-sshd').value || '{}'),
+        firewall_config: JSON.parse(document.getElementById('p-fw').value || '{}'),
+        docker_config: JSON.parse(document.getElementById('p-docker').value || '{}'),
+        agent_config: JSON.parse(document.getElementById('p-agent').value || '{}'),
+    };
+    const res = await fetch('/api/policies/{{ policy.id }}', {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    });
+    if(res.ok) location.reload();
+    else alert('保存失败');
+}
+async function applyPolicy() {
+    const checks = document.querySelectorAll('.node-check:checked');
+    const node_ids = Array.from(checks).map(c => parseInt(c.value));
+    if(node_ids.length === 0) {
+        alert('请至少选择一个节点');
+        return;
+    }
+    const autoGen = document.getElementById('auto-gen-key').checked;
+    const res = await fetch('/api/policies/{{ policy.id }}/apply', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({node_ids, auto_generate_root_key: autoGen})
+    });
+    const d = await res.json();
+    if(d.ok) {
+        if(d.generated_keys && d.generated_keys.length > 0) {
+            const container = document.getElementById('keys-list');
+            container.innerHTML = d.generated_keys.map((k, idx) => `
+                <div style="margin-bottom:16px; border:1px solid var(--border); border-radius:6px; padding:12px;" class="key-block" data-idx="${idx}">
+                    <div style="font-weight:600; margin-bottom:4px;">${k.node_name} — ${k.credential_name}</div>
+                    <label style="font-size:12px; color:var(--muted);">私钥</label>
+                    <pre style="font-size:12px; margin:4px 0 8px;">${k.private_key.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
+                    <textarea class="priv-data" style="display:none;">${k.private_key}</textarea>
+                    <label style="font-size:12px; color:var(--muted);">公钥</label>
+                    <pre style="font-size:12px; margin:4px 0;">${k.public_key.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
+                    <button class="btn" onclick="downloadKey(this, '${k.credential_name}.key')">下载私钥</button>
+                </div>
+            `).join('');
+            document.getElementById('keys-modal').style.display = 'block';
+        } else {
+            alert('已应用到 ' + d.applied + ' 个节点');
+            location.reload();
+        }
+    } else {
+        alert('应用失败: ' + (d.detail || '未知错误'));
+    }
+}
+function downloadKey(btn, filename) {
+    const block = btn.closest('.key-block');
+    const content = block.querySelector('.priv-data').value;
+    const blob = new Blob([content], {type: 'text/plain'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+}
+async function calcChecksums() {
+    const res = await fetch('/assets/checksums');
+    if(!res.ok) { alert('获取 checksum 失败'); return; }
+    const d = await res.json();
+    const current = JSON.parse(document.getElementById('p-agent').value || '{}');
+    const updated = {
+        auto_update: current.auto_update !== undefined ? current.auto_update : true,
+        version: current.version || new Date().toISOString().slice(0,10).replace(/-/g,''),
+        scripts: d.checksums || {}
+    };
+    document.getElementById('p-agent').value = JSON.stringify(updated, null, 2);
+}
+</script>
+{% endblock %}
