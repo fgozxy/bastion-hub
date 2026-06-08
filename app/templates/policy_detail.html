@@ -20,22 +20,6 @@
             <div class="form-row"><label>Allowed Source CIDRs (JSON 数组)</label><input id="p-cidrs" value='{{ policy.allowed_source_cidrs_json or "[]" }}'></div>
             <div class="form-row" style="grid-column:1/-1"><label>sshd_config (JSON)</label><textarea id="p-sshd" rows="4">{{ policy.sshd_config_json or '{}' }}</textarea></div>
             <div class="form-row" style="grid-column:1/-1"><label>firewall_config (JSON)</label><textarea id="p-fw" rows="3">{{ policy.firewall_config_json or '{}' }}</textarea></div>
-            <div class="form-row" style="display:flex; align-items:center; gap:8px;">
-                <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-                    <input type="checkbox" id="p-watchtower" {{ 'checked' if (policy.docker_config.watchtower|default(false)) else '' }}>
-                    启用 Watchtower（自动更新 Docker 容器镜像）
-                </label>
-            </div>
-            <div id="watchtower-fields" style="display:{{ 'grid' if (policy.docker_config.watchtower|default(false)) else 'none' }}; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px; grid-column:1/-1;">
-                <div class="form-row"><label>镜像</label><input id="p-watchtower-image" value="{{ policy.docker_config.watchtower_image|default('containrrr/watchtower') }}"></div>
-                <div class="form-row"><label>检查间隔（秒）</label><input id="p-watchtower-interval" type="number" value="{{ policy.docker_config.watchtower_interval|default(3600) }}"></div>
-                <div class="form-row" style="display:flex; align-items:center; gap:8px;">
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-                        <input type="checkbox" id="p-watchtower-cleanup" {{ 'checked' if (policy.docker_config.watchtower_cleanup|default(true)) else '' }}>
-                        更新后自动清理旧镜像
-                    </label>
-                </div>
-            </div>
             <div class="form-row" style="grid-column:1/-1">
                 <label>Agent 自更新配置 (JSON)
                     <button type="button" class="btn" style="font-size:12px;padding:2px 8px;margin-left:8px;" onclick="calcChecksums()">自动计算当前脚本 checksum</button>
@@ -46,7 +30,23 @@
                 </div>
             </div>
         </div>
-        <button type="submit" class="btn btn-primary">保存（版本+1）</button>
+
+        <div class="card" style="margin-top:12px; background:transparent; border:none; padding:0;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+                <input type="checkbox" id="p-watchtower" {{ 'checked' if (policy.docker_config.watchtower|default(false)) else '' }}>
+                <label for="p-watchtower" style="cursor:pointer; font-size:14px;">启用 Watchtower（自动更新 Docker 容器镜像）</label>
+            </div>
+            <div id="watchtower-fields" style="display:{{ 'grid' if (policy.docker_config.watchtower|default(false)) else 'none' }}; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">
+                <div class="form-row"><label>镜像</label><input id="p-watchtower-image" value="{{ policy.docker_config.watchtower_image|default('containrrr/watchtower') }}"></div>
+                <div class="form-row"><label>检查间隔（秒）</label><input id="p-watchtower-interval" type="number" value="{{ policy.docker_config.watchtower_interval|default(3600) }}"></div>
+                <div class="form-row" style="display:flex; align-items:center; gap:8px;">
+                    <input type="checkbox" id="p-watchtower-cleanup" {{ 'checked' if (policy.docker_config.watchtower_cleanup|default(true)) else '' }}>
+                    <label for="p-watchtower-cleanup" style="cursor:pointer;">更新后自动清理旧镜像</label>
+                </div>
+            </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="margin-top:12px;">保存（版本+1）</button>
     </form>
 </div>
 
