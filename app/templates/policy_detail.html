@@ -20,7 +20,7 @@
             <div class="form-row"><label>Allowed Source CIDRs (JSON 数组)</label><input id="p-cidrs" value='{{ policy.allowed_source_cidrs_json or "[]" }}'></div>
             <div class="form-row" style="grid-column:1/-1"><label>sshd_config (JSON)</label><textarea id="p-sshd" rows="4">{{ policy.sshd_config_json or '{}' }}</textarea></div>
             <div class="form-row" style="grid-column:1/-1"><label>firewall_config (JSON)</label><textarea id="p-fw" rows="3">{{ policy.firewall_config_json or '{}' }}</textarea></div>
-            <div class="form-row" style="grid-column:1/-1">
+            <div class="form-row" style="display:flex; align-items:center; gap:8px;">
                 <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
                     <input type="checkbox" id="p-watchtower" {{ 'checked' if (policy.docker_config.watchtower|default(false)) else '' }}>
                     启用 Watchtower（自动更新 Docker 容器镜像）
