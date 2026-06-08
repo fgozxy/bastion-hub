@@ -184,6 +184,13 @@ async def policy_detail_page(request: Request, policy_id: int, admin=Depends(get
     policy = SSHPolicyRepository.get_by_id(policy_id)
     if not policy:
         raise HTTPException(status_code=404, detail="策略不存在")
+    import json as _json
+    for key in ["allowed_principals_json", "allowed_source_node_ids_json", "allowed_source_cidrs_json", "sshd_config_json", "firewall_config_json", "docker_config_json", "agent_config_json"]:
+        try:
+            default = "[]" if any(x in key for x in ["principals", "node_ids", "cidrs"]) else "{}"
+            policy[key.replace("_json", "")] = _json.loads(policy.get(key) or default)
+        except Exception:
+            policy[key.replace("_json", "")] = [] if any(x in key for x in ["principals", "node_ids", "cidrs"]) else {}
     nodes = NodeRepository.list_all()
     return templates.TemplateResponse("policy_detail.html", {
         "request": request,
