@@ -190,4 +190,4 @@ Go · chi · gorilla/websocket · modernc.org/sqlite · robfig/cron · React · 
 
 ## License
 
-私人项目公开源码，供学习与自用。使用前请自行评估安全与合规风险。
+[MIT](LICENSE)
