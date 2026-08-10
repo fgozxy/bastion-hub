@@ -6,13 +6,15 @@ Agent 仍是部署到各被管节点上的轻量二进制（通过面板安装�
 ## 快速开始
 
 ```bash
-git clone <你的仓库> nodepanel && cd nodepanel
+git clone https://github.com/fgozxy/bastion-hub.git nodepanel && cd nodepanel
 cp .env.example .env            # 编辑：DOMAIN / ADMIN_USER / ADMIN_PASS
 docker compose up -d --build
 ```
 
 容器监听 `127.0.0.1:8088`（仅本机）。公网 HTTPS 由你的反代（Nginx Proxy Manager /
-Cloudflare 等）转发到 `127.0.0.1:8088`。
+Cloudflare Tunnel 等）转发到 `127.0.0.1:8088`，且必须支持 WebSocket。
+
+完整部署说明（含二进制 / systemd、反代示例、节点加入与升级）见仓库根目录 [`README.md`](../README.md)。
 
 - `.env` 的 `ADMIN_PASS` 只在**空数据库**首次启动时用于创建管理员；已有数据库保留原账号。
 - 数据（SQLite、Agent 二进制、暂存备份）持久化在卷 `/var/lib/nodepanel`
