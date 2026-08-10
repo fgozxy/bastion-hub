@@ -1,0 +1,15 @@
+[Unit]
+Description=Per-container restic backups
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+Environment=CONTAINER_RESTIC_BASE=/root/container-restic
+ExecStart=/root/container-restic/container-restic.sh backup-all
+ExecStartPost=/root/container-restic/copy-secondary.sh copy-secondary
+ExecStartPost=/root/container-restic/container-restic.sh forget
+ExecStartPost=/root/container-restic/github-config-backup.sh backup
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

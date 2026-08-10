@@ -1,0 +1,22 @@
+{
+  "name": "nodepanel-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NodePanel Android app (Capacitor)",
+  "scripts": {
+    "cap:sync": "npx cap sync android",
+    "cap:open": "npx cap open android",
+    "build:debug": "cd android && ./gradlew assembleDebug",
+    "build:release": "cd android && ./gradlew assembleRelease",
+    "dist:apk": "npm run cap:sync && npm run build:debug && mkdir -p ../web/public/downloads && cp android/app/build/outputs/apk/debug/app-debug.apk ../web/public/downloads/NodePanel.apk && cp ../web/public/downloads/NodePanel.apk ./NodePanel-debug.apk"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.1",
+    "@capacitor/app": "^6.0.3",
+    "@capacitor/cli": "^6.2.1",
+    "@capacitor/core": "^6.2.1",
+    "@capacitor/keyboard": "^6.0.4",
+    "@capacitor/splash-screen": "^6.0.4",
+    "@capacitor/status-bar": "^6.0.3"
+  }
+}

@@ -1,0 +1,23 @@
+services:
+  nodepanel:
+    build: .
+    image: nodepanel:latest
+    container_name: nodepanel
+    restart: unless-stopped
+    # Expose only on localhost; the public HTTPS path is handled by your reverse
+    # proxy (Nginx Proxy Manager / Cloudflare) forwarding to 127.0.0.1:8088.
+    ports:
+      - "127.0.0.1:8088:8088"
+    volumes:
+      # Persist the SQLite DB, served agent binaries, and staged backups.
+      - /var/lib/nodepanel:/var/lib/nodepanel
+      # Expose the project source so the GitHub "upload project" integration can
+      # git init/commit/push it from inside the container.
+      - ./:/root/nodepanel
+    command:
+      - --dev
+      - --dev-addr=0.0.0.0:8088
+      - --data-dir=/var/lib/nodepanel
+      - --domain=${DOMAIN:-panel.example.com}
+      - --admin-user=${ADMIN_USER:-admin}
+      - --admin-pass=${ADMIN_PASS}

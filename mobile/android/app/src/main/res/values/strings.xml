@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">NodePanel</string>
+    <string name="title_activity_main">NodePanel</string>
+    <string name="package_name">com.example.nodepanel</string>
+    <string name="custom_url_scheme">com.example.nodepanel</string>
+</resources>

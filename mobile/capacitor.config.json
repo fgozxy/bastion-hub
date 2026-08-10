@@ -1,0 +1,35 @@
+{
+  "appId": "com.example.nodepanel",
+  "appName": "NodePanel",
+  "webDir": "www",
+  "server": {
+    "url": "https://panel.example.com",
+    "cleartext": false,
+    "androidScheme": "https",
+    "allowNavigation": [
+      "panel.example.com",
+      "*.example.com"
+    ]
+  },
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#faf9f5",
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 800,
+      "backgroundColor": "#faf9f5",
+      "showSpinner": false,
+      "androidScaleType": "CENTER_CROP"
+    },
+    "StatusBar": {
+      "style": "LIGHT",
+      "backgroundColor": "#f0eee8"
+    },
+    "Keyboard": {
+      "resize": "body",
+      "resizeOnFullScreen": true
+    }
+  }
+}

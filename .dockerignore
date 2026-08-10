@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+build/
+.git
+.gitignore
+*.tar.gz
+*.db
+*.db-*
+*.log
+master/internal/webassets/dist
+deploy/docker-data
+nodepanel.db*
