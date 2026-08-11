@@ -3,12 +3,12 @@
   "appName": "NodePanel",
   "webDir": "www",
   "server": {
-    "url": "https://panel.example.com",
+    "url": "https://panel.voilde.de",
     "cleartext": false,
     "androidScheme": "https",
     "allowNavigation": [
-      "panel.example.com",
-      "*.example.com"
+      "panel.voilde.de",
+      "*.voilde.de"
     ]
   },
   "android": {
