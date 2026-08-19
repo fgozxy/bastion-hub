@@ -61,11 +61,31 @@ func TestMeshAddressesIncludesDualStack(t *testing.T) {
 	}
 }
 
+func TestNodeSSHPortAndUniquePorts(t *testing.T) {
+	port, err := nodeSSHPort(store.Node{Name: "default", SshPort: ""})
+	if err != nil || port != 22 {
+		t.Fatalf("default SSH port = %d, err=%v", port, err)
+	}
+	port, err = nodeSSHPort(store.Node{Name: "custom", SshPort: "2222"})
+	if err != nil || port != 2222 {
+		t.Fatalf("custom SSH port = %d, err=%v", port, err)
+	}
+	if _, err := nodeSSHPort(store.Node{Name: "bad", SshPort: "70000"}); err == nil {
+		t.Fatal("expected invalid SSH port error")
+	}
+	want := []int{22, 22022}
+	if got := uniquePorts([]int{22022, 22, 22022}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("uniquePorts() = %#v, want %#v", got, want)
+	}
+}
+
 func TestMeshFirewallScriptIsTransactionalAndDualStack(t *testing.T) {
 	for _, fragment := range []string{
 		"delete table inet nodepanel_mesh",
 		"set allowed_v4",
 		"set allowed_v6",
+		"set restricted_ports",
+		"tcp dport @restricted_ports drop",
 		"nft -f \"$tmp\"",
 	} {
 		if !strings.Contains(meshFirewallApplyScript, fragment) {

@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,8 +59,9 @@ type Service struct {
 }
 
 // StartAutoProvision keeps the managed SSH mesh converged.  It deliberately
-// manages only the dedicated mesh port (22022): existing administrator SSH
-// listeners/rules, commonly on port 22, are left untouched.
+// always manages the dedicated mesh port (22022). When a node is selected for
+// a custom source allowlist, its configured administrator SSH port is covered
+// by the same rule as well; sshd listener configuration itself is untouched.
 //
 // Agents connect outbound to the panel, so a newly joined node can receive the
 // key and firewall setup even before its mesh SSH port is reachable.
@@ -138,7 +140,15 @@ func (s *Service) syncAutoMesh(ctx context.Context) {
 	}
 	for _, m := range members {
 		sources := access.sourcesForNode(m.node.ID, defaultSources)
-		if err := s.applyMeshFirewall(m.node.ID, sources); err != nil {
+		ports := []int{meshSSHPort}
+		if access.appliesToNode(m.node.ID) {
+			if port, err := nodeSSHPort(m.node); err != nil {
+				log.Printf("[mesh] invalid SSH port on %s: %v; protecting only %d", m.node.Name, err, meshSSHPort)
+			} else {
+				ports = append(ports, port)
+			}
+		}
+		if err := s.applyMeshFirewall(m.node.ID, sources, ports); err != nil {
 			log.Printf("[mesh] firewall sync %s: %v", m.node.Name, err)
 		}
 	}
@@ -171,6 +181,7 @@ const meshFirewallApplyScript = `#!/bin/sh
 set -eu
 allow4=/etc/nodepanel/mesh-allowlist.v4
 allow6=/etc/nodepanel/mesh-allowlist.v6
+ports=/etc/nodepanel/mesh-ports
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 
@@ -186,11 +197,14 @@ nft add table inet nodepanel_mesh 2>/dev/null || true
   printf '  set allowed_v6 { type ipv6_addr; flags interval;'
   if [ -s "$allow6" ]; then printf ' elements = { '; paste -sd, "$allow6"; printf ' }'; fi
   echo ' }'
+  printf '  set restricted_ports { type inet_service; elements = { '
+  paste -sd, "$ports"
+  echo ' } }'
   echo '  chain input {'
   echo '    type filter hook input priority -10; policy accept;'
-  echo '    tcp dport 22022 ip saddr @allowed_v4 accept'
-  echo '    tcp dport 22022 ip6 saddr @allowed_v6 accept'
-  echo '    tcp dport 22022 drop'
+  echo '    tcp dport @restricted_ports ip saddr @allowed_v4 accept'
+  echo '    tcp dport @restricted_ports ip6 saddr @allowed_v6 accept'
+  echo '    tcp dport @restricted_ports drop'
   echo '  }'
   echo '}'
 } >"$tmp"
@@ -212,8 +226,10 @@ WantedBy=multi-user.target
 `
 
 // applyMeshFirewall installs or hot-replaces a persistent nftables rule on a
-// managed node. Only TCP/22022 is constrained; administrator SSH is untouched.
-func (s *Service) applyMeshFirewall(nodeID string, sources []string) error {
+// managed node. The caller chooses the SSH ports to constrain; the dedicated
+// mesh port is always included and custom targets also include their actual
+// configured administrator SSH port.
+func (s *Service) applyMeshFirewall(nodeID string, sources []string, ports []int) error {
 	var v4, v6 []string
 	for _, source := range sources {
 		ip, _, err := net.ParseCIDR(source)
@@ -229,10 +245,30 @@ func (s *Service) applyMeshFirewall(nodeID string, sources []string) error {
 	if len(v4)+len(v6) == 0 {
 		return fmt.Errorf("refusing to install an empty SSH source allowlist")
 	}
+	portSeen := map[int]bool{}
+	var normalizedPorts []int
+	for _, port := range ports {
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("invalid SSH port %d", port)
+		}
+		if !portSeen[port] {
+			portSeen[port] = true
+			normalizedPorts = append(normalizedPorts, port)
+		}
+	}
+	if len(normalizedPorts) == 0 {
+		return fmt.Errorf("refusing to install an empty SSH port list")
+	}
+	sort.Ints(normalizedPorts)
+	portLines := make([]string, 0, len(normalizedPorts))
+	for _, port := range normalizedPorts {
+		portLines = append(portLines, strconv.Itoa(port))
+	}
 	scriptB64 := base64.StdEncoding.EncodeToString([]byte(meshFirewallApplyScript))
 	unitB64 := base64.StdEncoding.EncodeToString([]byte(meshFirewallUnit))
 	allow4B64 := base64.StdEncoding.EncodeToString([]byte(strings.Join(v4, "\n")))
 	allow6B64 := base64.StdEncoding.EncodeToString([]byte(strings.Join(v6, "\n")))
+	portsB64 := base64.StdEncoding.EncodeToString([]byte(strings.Join(portLines, "\n")))
 	cmd := fmt.Sprintf(`set -eu
 install -d -m 700 /etc/nodepanel /usr/local/lib/nodepanel
 printf '%%s' %q | base64 -d > /usr/local/lib/nodepanel/mesh-firewall-apply
@@ -241,6 +277,8 @@ printf '%%s' %q | base64 -d > /etc/nodepanel/mesh-allowlist.v4
 chmod 600 /etc/nodepanel/mesh-allowlist.v4
 printf '%%s' %q | base64 -d > /etc/nodepanel/mesh-allowlist.v6
 chmod 600 /etc/nodepanel/mesh-allowlist.v6
+printf '%%s' %q | base64 -d > /etc/nodepanel/mesh-ports
+chmod 600 /etc/nodepanel/mesh-ports
 printf '%%s' %q | base64 -d > /etc/systemd/system/nodepanel-mesh-firewall.service
 command -v nft >/dev/null 2>&1 || { echo 'nftables is required for mesh SSH restrictions' >&2; exit 1; }
 systemctl daemon-reload
@@ -258,9 +296,9 @@ fi
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qx 'Status: active'; then
   # UFW's chain otherwise rejects this new port before the dedicated nft
   # allowlist can make the source-IP decision below.
-  ufw allow %d/tcp comment 'NodePanel Mesh (nft allowlist)'
+  for p in %s; do ufw allow "$p/tcp" comment 'NodePanel SSH (nft allowlist)'; done
 fi
-`, scriptB64, allow4B64, allow6B64, unitB64, meshSSHPort, meshSSHPort, meshSSHPort)
+`, scriptB64, allow4B64, allow6B64, portsB64, unitB64, meshSSHPort, meshSSHPort, strings.Join(portLines, " "))
 	_, exit, err := s.execNode(nodeID, cmd, execTimeout)
 	if err != nil {
 		return err
@@ -495,14 +533,47 @@ func normalizeNodeIDs(ids []string, known map[string]bool) ([]string, error) {
 }
 
 func (c AccessConfig) sourcesForNode(nodeID string, defaults []string) []string {
-	if c.Enabled {
-		for _, id := range c.NodeIDs {
-			if id == nodeID {
-				return c.SourceCIDRs
-			}
-		}
+	if c.appliesToNode(nodeID) {
+		return c.SourceCIDRs
 	}
 	return defaults
+}
+
+func (c AccessConfig) appliesToNode(nodeID string) bool {
+	if !c.Enabled {
+		return false
+	}
+	for _, id := range c.NodeIDs {
+		if id == nodeID {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeSSHPort(node store.Node) (int, error) {
+	raw := strings.TrimSpace(node.SshPort)
+	if raw == "" {
+		return 22, nil
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("节点 %s 的 SSH 端口无效：%q", node.Name, raw)
+	}
+	return port, nil
+}
+
+func uniquePorts(ports []int) []int {
+	seen := map[int]bool{}
+	out := make([]int, 0, len(ports))
+	for _, port := range ports {
+		if !seen[port] {
+			seen[port] = true
+			out = append(out, port)
+		}
+	}
+	sort.Ints(out)
+	return out
 }
 
 func (s *Service) loadAccessConfig(ctx context.Context) (AccessConfig, error) {
@@ -580,6 +651,14 @@ func (s *Service) PutAccess(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, http.StatusBadRequest, "启用限制时至少需要一个允许来源 IP/CIDR")
 		return
 	}
+	if body.Enabled {
+		for _, id := range body.NodeIDs {
+			if _, err := nodeSSHPort(byID[id]); err != nil {
+				httpx.Err(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+	}
 
 	previous, err := s.loadAccessConfig(r.Context())
 	if err != nil {
@@ -610,6 +689,7 @@ func (s *Service) PutAccess(w http.ResponseWriter, r *http.Request) {
 	type accessResult struct {
 		ID      string `json:"node_id"`
 		Name    string `json:"name"`
+		Ports   []int  `json:"ports,omitempty"`
 		Online  bool   `json:"online"`
 		OK      bool   `json:"ok"`
 		Pending bool   `json:"pending,omitempty"`
@@ -634,9 +714,22 @@ func (s *Service) PutAccess(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			res := accessResult{ID: node.ID, Name: node.Name, Online: true}
 			sources := body.sourcesForNode(node.ID, defaults)
+			ports := []int{meshSSHPort}
+			if body.appliesToNode(node.ID) {
+				port, err := nodeSSHPort(node)
+				if err != nil {
+					res.Error = err.Error()
+					mu.Lock()
+					results = append(results, res)
+					mu.Unlock()
+					return
+				}
+				ports = append(ports, port)
+			}
+			res.Ports = uniquePorts(ports)
 			if len(sources) == 0 {
 				res.Error = "没有可用的自动来源地址"
-			} else if err := s.applyMeshFirewall(node.ID, sources); err != nil {
+			} else if err := s.applyMeshFirewall(node.ID, sources, res.Ports); err != nil {
 				res.Error = err.Error()
 			} else {
 				res.OK = true

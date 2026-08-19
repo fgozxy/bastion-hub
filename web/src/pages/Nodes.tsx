@@ -34,7 +34,7 @@ export function NodesPage() {
   const [fwSel, setFwSel] = useState<Set<string>>(new Set());
   const [fwBusy, setFwBusy] = useState(false);
   const [fwAct, setFwAct] = useState(''); // 'enable' | 'disable' | 'allow' | 'deny'
-  // Dedicated mesh SSH (TCP/22022) source allowlist.
+  // Source allowlist for each selected node's configured SSH port + mesh 22022.
   const [meshOpen, setMeshOpen] = useState(false);
   const [meshEnabled, setMeshEnabled] = useState(false);
   const [meshIds, setMeshIds] = useState<string[]>([]);
@@ -263,7 +263,9 @@ export function NodesPage() {
     const sources = meshSources.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
     if (meshEnabled && meshIds.length === 0) return notify('请至少选择一个目标节点', 'error');
     if (meshEnabled && sources.length === 0) return notify('请至少填写一个允许来源 IP/CIDR', 'error');
-    if (meshEnabled && !confirm(`即将限制 ${meshIds.length} 个节点的 TCP/22022，仅允许 ${sources.length} 项来源。确认热更新？`)) return;
+    const selected = new Set(meshIds);
+    const sshPorts = Array.from(new Set(nodes.filter((n) => selected.has(n.id)).map((n) => n.ssh_port || '22'))).sort();
+    if (meshEnabled && !confirm(`即将限制 ${meshIds.length} 个节点的实际 SSH 端口（${sshPorts.join('、')}）及 22022，仅允许 ${sources.length} 项来源。确认热更新？`)) return;
     setMeshBusy(true);
     setMeshRes(null);
     try {
@@ -313,7 +315,7 @@ export function NodesPage() {
           >
             <Activity size={15} /> 加入Netdata
           </button>
-          <button className="btn" onClick={openMeshAccess} title="限制 TCP/22022 跳板 SSH 的允许来源 IP">
+          <button className="btn" onClick={openMeshAccess} title="限制各节点实际 SSH 端口及 22022 的允许来源 IP">
             <Shield size={15} /> 跳板连接限制
           </button>
           <button className="btn primary" onClick={() => setAddOpen(true)}>
@@ -598,7 +600,7 @@ export function NodesPage() {
                 />
               </div>
               <div className="card" style={{ padding: 11, background: 'var(--bg-tertiary)', fontSize: 12, color: 'var(--text-secondary)' }}>
-                仅限制 NodePanel 专用跳板端口 <code>22022</code>，不会修改节点原有 SSH 端口。保存后在线节点立即热更新；现有 22022 会话若来源不在新白名单中可能断开，但 Agent 的出站管理连接仍可用于恢复。
+                对选中节点同时限制其节点资料中配置的实际 SSH 端口和 NodePanel 专用端口 <code>22022</code>；不会修改 sshd 的监听端口。保存后在线节点立即热更新，白名单外的现有 SSH 会话可能断开，但 Agent 的出站管理连接仍可用于恢复。
                 {!meshEnabled && (
                   <div style={{ marginTop: 6 }}>当前将使用自动白名单：所有 NodePanel 节点的已知 IP{meshDefaults.length ? `（${meshDefaults.length} 项）` : ''}。</div>
                 )}
@@ -607,14 +609,17 @@ export function NodesPage() {
                 <button className="btn primary" onClick={applyMeshAccess} disabled={meshBusy}>
                   <Shield size={14} /> {meshBusy ? '热更新中…' : '保存并热更新'}
                 </button>
-                {meshEnabled && <span className="badge warning">白名单外来源将无法连接 22022</span>}
+                {meshEnabled && <span className="badge warning">白名单外来源将无法连接选中节点的 SSH 端口</span>}
               </div>
               {meshRes && (
                 <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {meshRes.length === 0 && <div className="badge muted">配置已保存，无需变更在线节点</div>}
                   {meshRes.map((x) => (
                     <div key={x.node_id} className="row" style={{ justifyContent: 'space-between', padding: '8px 12px', border: '1px solid var(--border-color)', borderRadius: 8 }}>
-                      <span style={{ fontSize: 13 }}>{x.name || x.node_id}</span>
+                      <span style={{ fontSize: 13 }}>
+                        {x.name || x.node_id}
+                        {Array.isArray(x.ports) && x.ports.length > 0 && <span className="mono" style={{ color: 'var(--text-tertiary)' }}> · TCP/{x.ports.join(',')}</span>}
+                      </span>
                       {x.ok ? (
                         <span style={{ fontSize: 12, color: 'var(--success, #2e7d32)' }}>✓ 已热更新</span>
                       ) : x.pending ? (
