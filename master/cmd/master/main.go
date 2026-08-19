@@ -94,8 +94,8 @@ func main() {
 	healthSvc := health.New(st, hub, nodesSvc, tg)
 	healthSvc.Start()
 	meshSvc := &mesh.Service{Store: st, Hub: hub}
-	// Auto mesh provisioning (5-min sync of mesh keys + the port-22022 IP
-	// allowlist firewall across online nodes). Toggle off with
+	// Auto mesh provisioning (5-min sync of mesh keys + the port-22022 custom
+	// or automatic IP/CIDR allowlist across online nodes). Toggle off with
 	// NODEPANEL_MESH_AUTO=0 to stop the panel from (re)applying the SSH
 	// source-IP restriction on managed nodes; the manual /api/mesh/* endpoints
 	// remain available either way.

@@ -152,6 +152,11 @@ export const api = {
     updateAgents: (node_ids: string[]) => post('/api/nodes/update-agents', { node_ids }),
     remove: (id: string) => del(`/api/nodes/${id}`),
   },
+  mesh: {
+    access: () => get('/api/mesh/access'),
+    putAccess: (config: { enabled: boolean; node_ids: string[]; source_cidrs: string[] }) =>
+      put('/api/mesh/access', config),
+  },
   health: {
     // Per-node status (online, netdata installed/enabled, agent capability, latest sample).
     status: () => get('/api/health'),

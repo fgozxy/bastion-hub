@@ -34,6 +34,15 @@ export function NodesPage() {
   const [fwSel, setFwSel] = useState<Set<string>>(new Set());
   const [fwBusy, setFwBusy] = useState(false);
   const [fwAct, setFwAct] = useState(''); // 'enable' | 'disable' | 'allow' | 'deny'
+  // Dedicated mesh SSH (TCP/22022) source allowlist.
+  const [meshOpen, setMeshOpen] = useState(false);
+  const [meshEnabled, setMeshEnabled] = useState(false);
+  const [meshIds, setMeshIds] = useState<string[]>([]);
+  const [meshSources, setMeshSources] = useState('');
+  const [meshBusy, setMeshBusy] = useState(false);
+  const [meshLoading, setMeshLoading] = useState(false);
+  const [meshRes, setMeshRes] = useState<any[] | null>(null);
+  const [meshDefaults, setMeshDefaults] = useState<string[]>([]);
 
   const load = () => {
     setLoading(true);
@@ -230,6 +239,53 @@ export function NodesPage() {
   const togglePortSel = (key: string) =>
     setFwSel((prev) => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
 
+  // --- mesh SSH source restriction (multi-node, hot update) ---
+  const openMeshAccess = async () => {
+    setMeshOpen(true);
+    setMeshLoading(true);
+    setMeshRes(null);
+    try {
+      const r: any = await api.mesh.access();
+      const cfg = r?.config || {};
+      setMeshEnabled(!!cfg.enabled);
+      const knownIds = new Set(nodes.map((n) => n.id));
+      setMeshIds(Array.isArray(cfg.node_ids) ? cfg.node_ids.filter((id: string) => knownIds.has(id)) : []);
+      setMeshSources(Array.isArray(cfg.source_cidrs) ? cfg.source_cidrs.join('\n') : '');
+      setMeshDefaults(Array.isArray(r?.default_sources) ? r.default_sources : []);
+    } catch (e: any) {
+      notify(e?.response?.data?.error || '读取跳板连接限制失败', 'error');
+      setMeshOpen(false);
+    } finally {
+      setMeshLoading(false);
+    }
+  };
+  const applyMeshAccess = async () => {
+    const sources = meshSources.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+    if (meshEnabled && meshIds.length === 0) return notify('请至少选择一个目标节点', 'error');
+    if (meshEnabled && sources.length === 0) return notify('请至少填写一个允许来源 IP/CIDR', 'error');
+    if (meshEnabled && !confirm(`即将限制 ${meshIds.length} 个节点的 TCP/22022，仅允许 ${sources.length} 项来源。确认热更新？`)) return;
+    setMeshBusy(true);
+    setMeshRes(null);
+    try {
+      const r: any = await api.mesh.putAccess({ enabled: meshEnabled, node_ids: meshIds, source_cidrs: sources });
+      const cfg = r?.config || {};
+      setMeshIds(Array.isArray(cfg.node_ids) ? cfg.node_ids : meshIds);
+      setMeshSources(Array.isArray(cfg.source_cidrs) ? cfg.source_cidrs.join('\n') : meshSources);
+      const results = Array.isArray(r?.results) ? r.results : [];
+      setMeshRes(results);
+      const failed = results.filter((x: any) => !x.ok && !x.pending).length;
+      const pending = results.filter((x: any) => x.pending).length;
+      notify(
+        failed ? `配置已保存，${failed} 个在线节点应用失败` : `配置已保存并热更新${pending ? `，${pending} 个离线节点待应用` : ''}`,
+        failed ? 'error' : 'success'
+      );
+    } catch (e: any) {
+      notify(e?.response?.data?.error || '更新跳板连接限制失败', 'error');
+    } finally {
+      setMeshBusy(false);
+    }
+  };
+
   return (
     <div>
       <div className="spread" style={{ marginBottom: 18 }}>
@@ -256,6 +312,9 @@ export function NodesPage() {
             title="批量安装 Netdata 监控（仅本地，不接入 Cloud）"
           >
             <Activity size={15} /> 加入Netdata
+          </button>
+          <button className="btn" onClick={openMeshAccess} title="限制 TCP/22022 跳板 SSH 的允许来源 IP">
+            <Shield size={15} /> 跳板连接限制
           </button>
           <button className="btn primary" onClick={() => setAddOpen(true)}>
             <Plus size={15} /> 添加节点
@@ -504,6 +563,70 @@ export function NodesPage() {
                 </div>
               ))}
             </div>
+          )}
+        </Modal>
+      )}
+
+      {/* Dedicated mesh SSH source restriction modal */}
+      {meshOpen && (
+        <Modal title="SSH 跳板连接限制" wide onClose={() => !meshBusy && setMeshOpen(false)}>
+          {meshLoading ? (
+            <div style={{ padding: 20, color: 'var(--text-tertiary)' }}>读取配置中…</div>
+          ) : (
+            <>
+              <label className="row" style={{ gap: 9, cursor: 'pointer', marginBottom: 14 }}>
+                <input type="checkbox" checked={meshEnabled} onChange={(e) => setMeshEnabled(e.target.checked)} />
+                <strong>启用自定义来源白名单</strong>
+              </label>
+              <div className="field">
+                <label>目标节点（可多选 / 全选，离线节点会在重连后应用）</label>
+                <NodeSelect nodes={nodes} value={meshIds} onChange={setMeshIds} placeholder="选择要限制跳板 SSH 的节点…" />
+                <div className="row" style={{ marginTop: 7, gap: 8 }}>
+                  <button className="btn sm" type="button" onClick={() => setMeshIds(nodes.map((n) => n.id))}>全选所有节点</button>
+                  <button className="btn sm ghost" type="button" onClick={() => setMeshIds([])}>清空选择</button>
+                </div>
+              </div>
+              <div className="field">
+                <label>允许来源 IP / CIDR（每行一个，也可用逗号分隔）</label>
+                <textarea
+                  className="input mono"
+                  rows={6}
+                  value={meshSources}
+                  onChange={(e) => setMeshSources(e.target.value)}
+                  disabled={!meshEnabled}
+                  placeholder={'例如：\n203.0.113.10\n198.51.100.0/24\n2001:db8::/48'}
+                />
+              </div>
+              <div className="card" style={{ padding: 11, background: 'var(--bg-tertiary)', fontSize: 12, color: 'var(--text-secondary)' }}>
+                仅限制 NodePanel 专用跳板端口 <code>22022</code>，不会修改节点原有 SSH 端口。保存后在线节点立即热更新；现有 22022 会话若来源不在新白名单中可能断开，但 Agent 的出站管理连接仍可用于恢复。
+                {!meshEnabled && (
+                  <div style={{ marginTop: 6 }}>当前将使用自动白名单：所有 NodePanel 节点的已知 IP{meshDefaults.length ? `（${meshDefaults.length} 项）` : ''}。</div>
+                )}
+              </div>
+              <div className="row" style={{ gap: 10, marginTop: 14 }}>
+                <button className="btn primary" onClick={applyMeshAccess} disabled={meshBusy}>
+                  <Shield size={14} /> {meshBusy ? '热更新中…' : '保存并热更新'}
+                </button>
+                {meshEnabled && <span className="badge warning">白名单外来源将无法连接 22022</span>}
+              </div>
+              {meshRes && (
+                <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {meshRes.length === 0 && <div className="badge muted">配置已保存，无需变更在线节点</div>}
+                  {meshRes.map((x) => (
+                    <div key={x.node_id} className="row" style={{ justifyContent: 'space-between', padding: '8px 12px', border: '1px solid var(--border-color)', borderRadius: 8 }}>
+                      <span style={{ fontSize: 13 }}>{x.name || x.node_id}</span>
+                      {x.ok ? (
+                        <span style={{ fontSize: 12, color: 'var(--success, #2e7d32)' }}>✓ 已热更新</span>
+                      ) : x.pending ? (
+                        <span style={{ fontSize: 12, color: 'var(--warning, #a66a00)' }}>○ 离线，重连后应用</span>
+                      ) : (
+                        <span style={{ fontSize: 12, color: 'var(--danger, #c0392b)' }}>✗ {x.error || '应用失败'}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </Modal>
       )}

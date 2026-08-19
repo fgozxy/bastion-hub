@@ -110,6 +110,8 @@ func Routes(d *Deps) http.Handler {
 
 		r.Post("/api/mesh/provision", d.Mesh.Provision)
 		r.Get("/api/mesh/status", d.Mesh.Status)
+		r.Get("/api/mesh/access", d.Mesh.Access)
+		r.Put("/api/mesh/access", d.Mesh.PutAccess)
 
 		r.Get("/api/backups", d.Backup.List)
 		r.Post("/api/backups/now", d.Backup.BackupNow)

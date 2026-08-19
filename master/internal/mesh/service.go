@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -35,11 +36,21 @@ import (
 )
 
 const (
-	meshKeyPath = "/root/.ssh/nodepanel_mesh"
-	meshComment = "nodepanel-mesh"
-	execTimeout = 40 // seconds per node-side command
-	meshSSHPort = 22022
+	meshKeyPath       = "/root/.ssh/nodepanel_mesh"
+	meshComment       = "nodepanel-mesh"
+	execTimeout       = 40 // seconds per node-side command
+	meshSSHPort       = 22022
+	meshAccessSetting = "mesh_ssh_access"
 )
+
+// AccessConfig persists the custom source allowlist for the dedicated mesh SSH
+// port. Nodes not listed here keep the automatic managed-node allowlist.
+type AccessConfig struct {
+	Enabled     bool     `json:"enabled"`
+	NodeIDs     []string `json:"node_ids"`
+	SourceCIDRs []string `json:"source_cidrs"`
+	UpdatedAt   int64    `json:"updated_at,omitempty"`
+}
 
 type Service struct {
 	Store *store.Store
@@ -69,8 +80,9 @@ func (s *Service) StartAutoProvision(ctx context.Context) {
 }
 
 // syncAutoMesh gives every currently online managed node a mesh key, installs
-// every peer public key, and replaces the dedicated-port allowlist with the
-// current managed-node IPv4 set.  All mutations are idempotent.
+// every peer public key, and converges the dedicated-port allowlist. Nodes in
+// the persisted custom selection use its source CIDRs; other nodes use all
+// known managed-node addresses. All mutations are idempotent.
 func (s *Service) syncAutoMesh(ctx context.Context) {
 	nodes, err := s.selectedNodes(ctx, nil)
 	if err != nil {
@@ -109,26 +121,43 @@ func (s *Service) syncAutoMesh(ctx context.Context) {
 		}
 	}
 
-	ips := meshIPv4s(nodes)
-	if len(ips) == 0 {
-		log.Printf("[mesh] skip firewall sync: no managed-node IPv4 addresses")
+	allNodes, err := s.Store.ListNodes(ctx)
+	if err != nil {
+		log.Printf("[mesh] list nodes for firewall sync: %v", err)
 		return
 	}
+	defaultSources := meshAddresses(allNodes)
+	if len(defaultSources) == 0 {
+		log.Printf("[mesh] skip firewall sync: no managed-node IP addresses")
+		return
+	}
+	access, err := s.loadAccessConfig(ctx)
+	if err != nil {
+		log.Printf("[mesh] load custom access config: %v; using automatic allowlist", err)
+		access = AccessConfig{}
+	}
 	for _, m := range members {
-		if err := s.applyMeshFirewall(m.node.ID, ips); err != nil {
+		sources := access.sourcesForNode(m.node.ID, defaultSources)
+		if err := s.applyMeshFirewall(m.node.ID, sources); err != nil {
 			log.Printf("[mesh] firewall sync %s: %v", m.node.Name, err)
 		}
 	}
 }
 
-func meshIPv4s(nodes []store.Node) []string {
+func meshAddresses(nodes []store.Node) []string {
 	seen := map[string]bool{}
 	for _, n := range nodes {
-		ip := net.ParseIP(strings.TrimSpace(n.IPv4))
-		if ip == nil || ip.To4() == nil {
-			continue
+		for _, raw := range []string{n.IPv4, n.IPv6} {
+			ip := net.ParseIP(strings.TrimSpace(raw))
+			if ip == nil {
+				continue
+			}
+			if v4 := ip.To4(); v4 != nil {
+				seen[v4.String()+"/32"] = true
+			} else {
+				seen[ip.String()+"/128"] = true
+			}
 		}
-		seen[ip.To4().String()] = true
 	}
 	out := make([]string, 0, len(seen))
 	for ip := range seen {
@@ -140,25 +169,32 @@ func meshIPv4s(nodes []store.Node) []string {
 
 const meshFirewallApplyScript = `#!/bin/sh
 set -eu
-allow=/etc/nodepanel/mesh-allowlist.v4
+allow4=/etc/nodepanel/mesh-allowlist.v4
+allow6=/etc/nodepanel/mesh-allowlist.v6
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 
+# Ensure the delete statement below is always valid. The following nft batch is
+# transactional, so existing access remains intact if the replacement is bad.
+nft add table inet nodepanel_mesh 2>/dev/null || true
 {
+  echo 'delete table inet nodepanel_mesh'
   echo 'table inet nodepanel_mesh {'
-  printf '  set allowed_v4 { type ipv4_addr; flags interval; elements = { '
-  paste -sd, "$allow"
-  echo ' } }'
+  printf '  set allowed_v4 { type ipv4_addr; flags interval;'
+  if [ -s "$allow4" ]; then printf ' elements = { '; paste -sd, "$allow4"; printf ' }'; fi
+  echo ' }'
+  printf '  set allowed_v6 { type ipv6_addr; flags interval;'
+  if [ -s "$allow6" ]; then printf ' elements = { '; paste -sd, "$allow6"; printf ' }'; fi
+  echo ' }'
   echo '  chain input {'
   echo '    type filter hook input priority -10; policy accept;'
   echo '    tcp dport 22022 ip saddr @allowed_v4 accept'
+  echo '    tcp dport 22022 ip6 saddr @allowed_v6 accept'
   echo '    tcp dport 22022 drop'
-  echo '    tcp dport 22022 ip6 saddr ::/0 drop'
   echo '  }'
   echo '}'
 } >"$tmp"
 
-nft delete table inet nodepanel_mesh 2>/dev/null || true
 nft -f "$tmp"
 `
 
@@ -175,21 +211,42 @@ ExecStart=/usr/local/lib/nodepanel/mesh-firewall-apply
 WantedBy=multi-user.target
 `
 
-// applyMeshFirewall installs a persistent nftables rule on a managed node.
-// Only TCP/22022 is constrained; IPv6 is closed on that dedicated port until
-// IPv6 node addresses are deliberately supported.
-func (s *Service) applyMeshFirewall(nodeID string, ips []string) error {
-	allow := strings.Join(ips, "\n") + "\n"
+// applyMeshFirewall installs or hot-replaces a persistent nftables rule on a
+// managed node. Only TCP/22022 is constrained; administrator SSH is untouched.
+func (s *Service) applyMeshFirewall(nodeID string, sources []string) error {
+	var v4, v6 []string
+	for _, source := range sources {
+		ip, _, err := net.ParseCIDR(source)
+		if err != nil {
+			return fmt.Errorf("invalid normalized source %q", source)
+		}
+		if ip.To4() != nil {
+			v4 = append(v4, source)
+		} else {
+			v6 = append(v6, source)
+		}
+	}
+	if len(v4)+len(v6) == 0 {
+		return fmt.Errorf("refusing to install an empty SSH source allowlist")
+	}
 	scriptB64 := base64.StdEncoding.EncodeToString([]byte(meshFirewallApplyScript))
 	unitB64 := base64.StdEncoding.EncodeToString([]byte(meshFirewallUnit))
-	allowB64 := base64.StdEncoding.EncodeToString([]byte(allow))
+	allow4B64 := base64.StdEncoding.EncodeToString([]byte(strings.Join(v4, "\n")))
+	allow6B64 := base64.StdEncoding.EncodeToString([]byte(strings.Join(v6, "\n")))
 	cmd := fmt.Sprintf(`set -eu
 install -d -m 700 /etc/nodepanel /usr/local/lib/nodepanel
 printf '%%s' %q | base64 -d > /usr/local/lib/nodepanel/mesh-firewall-apply
 chmod 700 /usr/local/lib/nodepanel/mesh-firewall-apply
 printf '%%s' %q | base64 -d > /etc/nodepanel/mesh-allowlist.v4
 chmod 600 /etc/nodepanel/mesh-allowlist.v4
+printf '%%s' %q | base64 -d > /etc/nodepanel/mesh-allowlist.v6
+chmod 600 /etc/nodepanel/mesh-allowlist.v6
 printf '%%s' %q | base64 -d > /etc/systemd/system/nodepanel-mesh-firewall.service
+command -v nft >/dev/null 2>&1 || { echo 'nftables is required for mesh SSH restrictions' >&2; exit 1; }
+systemctl daemon-reload
+systemctl enable nodepanel-mesh-firewall.service
+# Restrict the dedicated port before making sshd/UFW accept traffic on it.
+systemctl restart nodepanel-mesh-firewall.service
 mesh_ssh_ports=$(ss -lntp | awk '/sshd/ { p=$4; sub(/^.*:/, "", p); if (p ~ /^[0-9]+$/) print p }' | sort -nu)
 if ! printf '%%s\n' "$mesh_ssh_ports" | grep -qx '%d'; then
   [ -n "$mesh_ssh_ports" ] || { echo 'could not determine existing sshd listener ports' >&2; exit 1; }
@@ -203,9 +260,7 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qx 'Status: 
   # allowlist can make the source-IP decision below.
   ufw allow %d/tcp comment 'NodePanel Mesh (nft allowlist)'
 fi
-systemctl daemon-reload
-systemctl enable --now nodepanel-mesh-firewall.service
-`, scriptB64, allowB64, unitB64, meshSSHPort, meshSSHPort, meshSSHPort)
+`, scriptB64, allow4B64, allow6B64, unitB64, meshSSHPort, meshSSHPort, meshSSHPort)
 	_, exit, err := s.execNode(nodeID, cmd, execTimeout)
 	if err != nil {
 		return err
@@ -380,7 +435,223 @@ func (s *Service) selectedNodes(ctx context.Context, ids []string) ([]store.Node
 	return out, nil
 }
 
+func normalizeSourceCIDRs(values []string) ([]string, error) {
+	seen := map[string]bool{}
+	for _, value := range values {
+		parts := strings.FieldsFunc(value, func(r rune) bool {
+			return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+		})
+		for _, raw := range parts {
+			var normalized string
+			if strings.Contains(raw, "/") {
+				_, network, err := net.ParseCIDR(raw)
+				if err != nil {
+					return nil, fmt.Errorf("无效的 IP/CIDR：%s", raw)
+				}
+				normalized = network.String()
+			} else {
+				ip := net.ParseIP(raw)
+				if ip == nil {
+					return nil, fmt.Errorf("无效的 IP/CIDR：%s", raw)
+				}
+				if v4 := ip.To4(); v4 != nil {
+					normalized = v4.String() + "/32"
+				} else {
+					normalized = ip.String() + "/128"
+				}
+			}
+			seen[normalized] = true
+			if len(seen) > 128 {
+				return nil, fmt.Errorf("来源白名单最多支持 128 项")
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func normalizeNodeIDs(ids []string, known map[string]bool) ([]string, error) {
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		if !known[id] {
+			return nil, fmt.Errorf("节点不存在：%s", id)
+		}
+		seen[id] = true
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (c AccessConfig) sourcesForNode(nodeID string, defaults []string) []string {
+	if c.Enabled {
+		for _, id := range c.NodeIDs {
+			if id == nodeID {
+				return c.SourceCIDRs
+			}
+		}
+	}
+	return defaults
+}
+
+func (s *Service) loadAccessConfig(ctx context.Context) (AccessConfig, error) {
+	raw, err := s.Store.GetSetting(ctx, meshAccessSetting)
+	if err != nil || raw == "" {
+		return AccessConfig{}, err
+	}
+	var cfg AccessConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return AccessConfig{}, err
+	}
+	if cfg.Enabled && (len(cfg.NodeIDs) == 0 || len(cfg.SourceCIDRs) == 0) {
+		return AccessConfig{}, fmt.Errorf("stored SSH access config is incomplete")
+	}
+	return cfg, nil
+}
+
 // ---- HTTP handlers ----
+
+// Access GET /api/mesh/access returns the persisted custom allowlist and the
+// automatic fallback derived from all managed-node addresses.
+func (s *Service) Access(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.loadAccessConfig(r.Context())
+	if err != nil {
+		httpx.InternalErr(w, "读取 SSH 跳板限制失败："+err.Error())
+		return
+	}
+	nodes, err := s.Store.ListNodes(r.Context())
+	if err != nil {
+		httpx.InternalErr(w, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"config":          cfg,
+		"mesh_port":       meshSSHPort,
+		"default_sources": meshAddresses(nodes),
+	})
+}
+
+// PutAccess PUT /api/mesh/access hot-replaces TCP/22022 source restrictions on
+// selected online nodes and persists the desired state for offline/reconnecting
+// nodes. Removing a node from the custom selection restores the automatic list.
+func (s *Service) PutAccess(w http.ResponseWriter, r *http.Request) {
+	var body AccessConfig
+	if err := httpx.ReadJSON(r, &body); err != nil {
+		httpx.Err(w, http.StatusBadRequest, "请求格式无效")
+		return
+	}
+	all, err := s.Store.ListNodes(r.Context())
+	if err != nil {
+		httpx.InternalErr(w, err.Error())
+		return
+	}
+	known := make(map[string]bool, len(all))
+	byID := make(map[string]store.Node, len(all))
+	for _, node := range all {
+		known[node.ID] = true
+		byID[node.ID] = node
+	}
+	body.NodeIDs, err = normalizeNodeIDs(body.NodeIDs, known)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	body.SourceCIDRs, err = normalizeSourceCIDRs(body.SourceCIDRs)
+	if err != nil {
+		httpx.Err(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Enabled && len(body.NodeIDs) == 0 {
+		httpx.Err(w, http.StatusBadRequest, "请至少选择一个目标节点")
+		return
+	}
+	if body.Enabled && len(body.SourceCIDRs) == 0 {
+		httpx.Err(w, http.StatusBadRequest, "启用限制时至少需要一个允许来源 IP/CIDR")
+		return
+	}
+
+	previous, err := s.loadAccessConfig(r.Context())
+	if err != nil {
+		httpx.InternalErr(w, "读取原 SSH 跳板限制失败："+err.Error())
+		return
+	}
+	body.UpdatedAt = time.Now().Unix()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		httpx.InternalErr(w, err.Error())
+		return
+	}
+	if err := s.Store.SetSetting(r.Context(), meshAccessSetting, string(raw)); err != nil {
+		httpx.InternalErr(w, "保存 SSH 跳板限制失败："+err.Error())
+		return
+	}
+
+	// Apply both the old and new selections. This immediately restores the
+	// automatic list on nodes removed from the custom selection.
+	affected := map[string]bool{}
+	for _, id := range previous.NodeIDs {
+		affected[id] = true
+	}
+	for _, id := range body.NodeIDs {
+		affected[id] = true
+	}
+	defaults := meshAddresses(all)
+	type accessResult struct {
+		ID      string `json:"node_id"`
+		Name    string `json:"name"`
+		Online  bool   `json:"online"`
+		OK      bool   `json:"ok"`
+		Pending bool   `json:"pending,omitempty"`
+		Error   string `json:"error,omitempty"`
+	}
+	results := make([]accessResult, 0, len(affected))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for id := range affected {
+		node, ok := byID[id]
+		if !ok {
+			continue
+		}
+		if !s.Hub.Online(id) {
+			mu.Lock()
+			results = append(results, accessResult{ID: id, Name: node.Name, Pending: true, Error: "节点离线，配置已保存，重连后自动应用"})
+			mu.Unlock()
+			continue
+		}
+		wg.Add(1)
+		go func(node store.Node) {
+			defer wg.Done()
+			res := accessResult{ID: node.ID, Name: node.Name, Online: true}
+			sources := body.sourcesForNode(node.ID, defaults)
+			if len(sources) == 0 {
+				res.Error = "没有可用的自动来源地址"
+			} else if err := s.applyMeshFirewall(node.ID, sources); err != nil {
+				res.Error = err.Error()
+			} else {
+				res.OK = true
+			}
+			mu.Lock()
+			results = append(results, res)
+			mu.Unlock()
+		}(node)
+	}
+	wg.Wait()
+	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
+	s.Store.Audit(r.Context(), authUser(r), "mesh.access.update",
+		fmt.Sprintf("enabled=%v nodes=%d sources=%d", body.Enabled, len(body.NodeIDs), len(body.SourceCIDRs)))
+	httpx.OK(w, map[string]any{"config": body, "mesh_port": meshSSHPort, "results": results})
+}
 
 // Provision POST /api/mesh/provision {node_ids?:[...], full_mesh?:bool}
 // Ensures each selected node has a mesh keypair, then (full_mesh, default) pushes
