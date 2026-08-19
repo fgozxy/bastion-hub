@@ -209,8 +209,8 @@ func (s *Store) migrate() error {
 			installed_at INTEGER
 		)`,
 		// health_alerts are per-node metric thresholds the master evaluates against
-		// polled Netdata samples. Supports load/iowait/swap (the metrics Komari
-		// could not alert on). breach_since/last_notified drive sustained-window
+		// polled Netdata samples. Supports load/iowait/swap alerts.
+		// breach_since/last_notified drive sustained-window
 		// gating + announce-once-per-outage dedup.
 		`CREATE TABLE IF NOT EXISTS health_alerts (
 			id TEXT PRIMARY KEY,

@@ -19,7 +19,6 @@ import (
 	"nodepanel/master/internal/config"
 	"nodepanel/master/internal/geoip"
 	"nodepanel/master/internal/httpx"
-	"nodepanel/master/internal/komari"
 	"nodepanel/master/internal/store"
 	"nodepanel/shared/proto"
 )
@@ -246,121 +245,6 @@ func (s *Service) UpdateAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 	s.Store.Audit(r.Context(), "admin", "node.update_agent_batch", fmt.Sprintf("%d nodes", len(body.NodeIDs)))
-	httpx.OK(w, out)
-}
-
-// ProbeCandidates GET /api/nodes/probe/candidates — online nodes that are NOT
-// already in Komari (matched by name), i.e. the "加入探针" picker list.
-func (s *Service) ProbeCandidates(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	cfg := komari.LoadConfig(ctx, s.Store)
-	if !cfg.Client().Valid() {
-		httpx.OK(w, map[string]any{"configured": false})
-		return
-	}
-	existing, err := cfg.Client().ListClients(ctx)
-	if err != nil {
-		httpx.Err(w, http.StatusBadGateway, "读取 Komari 节点列表失败: "+err.Error())
-		return
-	}
-	// Match by public IPv4 first (komari's existing node names often carry a
-	// region suffix like "华为云新加坡" that won't equal NodePanel's "华为云"), name
-	// as a fallback.
-	haveName := make(map[string]bool, len(existing))
-	haveIP := make(map[string]bool, len(existing))
-	for _, e := range existing {
-		if e.Name != "" {
-			haveName[e.Name] = true
-		}
-		if e.Ipv4 != "" {
-			haveIP[e.Ipv4] = true
-		}
-	}
-	nodes, _ := s.Store.ListNodes(ctx)
-	cands := []nodeView{}
-	exist := []nodeView{}
-	for i := range nodes {
-		if !s.Hub.Online(nodes[i].ID) {
-			continue
-		}
-		v := s.view(&nodes[i], false) // full node fields for the NodeSelect picker
-		v.Online = true
-		if haveName[nodes[i].Name] || (nodes[i].IPv4 != "" && haveIP[nodes[i].IPv4]) {
-			exist = append(exist, v)
-		} else {
-			cands = append(cands, v)
-		}
-	}
-	httpx.OK(w, map[string]any{"configured": true, "komari_url": cfg.BaseURL, "candidates": cands, "existing": exist})
-}
-
-// ProbeJoin POST /api/nodes/probe/join {node_ids:[]} — add each node to Komari
-// (by name) and install the komari-agent on it. Returns per-node results.
-func (s *Service) ProbeJoin(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		NodeIDs []string `json:"node_ids"`
-	}
-	if err := httpx.ReadJSON(r, &body); err != nil || len(body.NodeIDs) == 0 {
-		httpx.Err(w, 400, "node_ids required")
-		return
-	}
-	ctx := r.Context()
-	cfg := komari.LoadConfig(ctx, s.Store)
-	if !cfg.Client().Valid() {
-		httpx.Err(w, 400, "未配置 Komari，请先到「设置 → 探针 Komari」配置")
-		return
-	}
-	kc := cfg.Client()
-	nodes, _ := s.Store.ListNodes(ctx)
-	nameOf := make(map[string]string, len(nodes))
-	for _, n := range nodes {
-		nameOf[n.ID] = n.Name
-	}
-
-	type res struct {
-		NodeID string `json:"node_id"`
-		Name   string `json:"name,omitempty"`
-		OK     bool   `json:"ok"`
-		Err    string `json:"err,omitempty"`
-	}
-	out := make([]res, len(body.NodeIDs))
-	var wg sync.WaitGroup
-	for i, id := range body.NodeIDs {
-		wg.Add(1)
-		go func(i int, id string) {
-			defer wg.Done()
-			name := nameOf[id]
-			rr := res{NodeID: id, Name: name}
-			if !s.Hub.Online(id) {
-				rr.Err = "节点离线"
-				out[i] = rr
-				return
-			}
-			if name == "" {
-				rr.Err = "节点不存在"
-				out[i] = rr
-				return
-			}
-			uuid, token, err := kc.AddClient(ctx, name)
-			if err != nil {
-				rr.Err = "Komari 创建节点失败: " + err.Error()
-				out[i] = rr
-				return
-			}
-			cmd := fmt.Sprintf(`curl -fsSL %q | bash -s -- --token %q --endpoint %q`,
-				cfg.InstallURL, token, cfg.BaseURL)
-			if _, _, err := s.ExecSync(ctx, id, cmd, 180*time.Second); err != nil {
-				_ = kc.RemoveClient(ctx, uuid) // rollback the just-created Komari client
-				rr.Err = "节点安装 komari-agent 失败: " + err.Error()
-				out[i] = rr
-				return
-			}
-			rr.OK = true
-			out[i] = rr
-		}(i, id)
-	}
-	wg.Wait()
-	s.Store.Audit(ctx, "admin", "node.probe_join", fmt.Sprintf("%d nodes", len(body.NodeIDs)))
 	httpx.OK(w, out)
 }
 

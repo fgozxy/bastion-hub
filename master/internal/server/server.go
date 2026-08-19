@@ -79,10 +79,6 @@ func Routes(d *Deps) http.Handler {
 		r.Post("/api/nodes/firewall/toggle", d.Nodes.FirewallToggle)
 		r.Post("/api/nodes/firewall/ports", d.Nodes.FirewallPorts)
 
-		// 探针 (Komari) — list joinable nodes / batch-enroll them.
-		r.Get("/api/nodes/probe/candidates", d.Nodes.ProbeCandidates)
-		r.Post("/api/nodes/probe/join", d.Nodes.ProbeJoin)
-
 		// 健康监控 (Netdata) — per-node status, batch install/uninstall, metrics, alert rules.
 		r.Get("/api/health", d.Health.Status)
 		r.Post("/api/health/install", d.Health.Install)
@@ -149,8 +145,6 @@ func Routes(d *Deps) http.Handler {
 		r.Put("/api/settings/retention", d.Settings.PutRetention)
 		r.Put("/api/settings/excludes", d.Settings.PutExcludes)
 		r.Put("/api/settings/container-monitor", d.Settings.PutContainerMonitor)
-		r.Put("/api/settings/komari", d.Settings.PutKomari)
-		r.Post("/api/settings/komari/test", d.Settings.TestKomari)
 		r.Put("/api/settings/github", d.Settings.GithubSaveConfig)
 		r.Post("/api/settings/github/push-project", d.Settings.GithubPushProject)
 

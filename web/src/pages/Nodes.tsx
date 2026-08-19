@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, RefreshCw, Trash2, Pencil, DownloadCloud, Shield, ShieldOff, Radar, Activity } from 'lucide-react';
+import { Plus, RefreshCw, Trash2, Pencil, DownloadCloud, Shield, ShieldOff, Activity } from 'lucide-react';
 import { api } from '../services/api';
 import { useWs } from '../hooks/useWs';
 import { notify } from '../stores';
@@ -20,14 +20,6 @@ export function NodesPage() {
   const [batchIds, setBatchIds] = useState<string[]>([]);
   const [batchRes, setBatchRes] = useState<any[] | null>(null);
   const [batchBusy, setBatchBusy] = useState(false);
-  // Komari probe join modal state
-  const [probeOpen, setProbeOpen] = useState(false);
-  const [probeCfg, setProbeCfg] = useState<any | null>(null);
-  const [probeCands, setProbeCands] = useState<any[]>([]);
-  const [probeExisting, setProbeExisting] = useState<any[]>([]);
-  const [probeIds, setProbeIds] = useState<string[]>([]);
-  const [probeBusy, setProbeBusy] = useState(false);
-  const [probeRes, setProbeRes] = useState<any[] | null>(null);
   // Netdata install modal state
   const [netOpen, setNetOpen] = useState(false);
   const [netIds, setNetIds] = useState<string[]>([]);
@@ -193,42 +185,6 @@ export function NodesPage() {
     runNetInstall(ids);
   };
 
-  // --- Komari probe join ---
-  const openProbe = async () => {
-    setProbeOpen(true);
-    setProbeIds([]); setProbeRes(null); setProbeCands([]); setProbeExisting([]); setProbeCfg(null);
-    try {
-      const r: any = await api.nodes.probeCandidates();
-      setProbeCfg(r);
-      if (r?.configured) { setProbeCands(r.candidates || []); setProbeExisting(r.existing || []); }
-    } catch (e: any) {
-      notify(e?.response?.data?.error || '读取探针候选失败', 'error');
-    }
-  };
-  const runProbeJoin = async (ids: string[]) => {
-    if (ids.length === 0) return notify('请选择节点', 'error');
-    setProbeBusy(true); setProbeRes(null);
-    try {
-      const r: any = await api.nodes.probeJoin(ids);
-      setProbeRes(Array.isArray(r) ? r : []);
-      const ok = (r as any[]).filter((x) => x.ok).length;
-      notify(`完成：${ok}/${ids.length} 个节点已加入探针`, ok === ids.length ? 'success' : 'error');
-      const c: any = await api.nodes.probeCandidates().catch(() => null); // refresh: joined ones drop out
-      if (c?.configured) { setProbeCfg(c); setProbeCands(c.candidates || []); setProbeExisting(c.existing || []); }
-      setProbeIds([]);
-    } catch (e: any) {
-      notify(e?.response?.data?.error || '加入探针失败', 'error');
-    } finally {
-      setProbeBusy(false);
-    }
-  };
-  const doProbeJoin = () => runProbeJoin(probeIds);
-  const probeJoinAll = () => {
-    const ids = probeCands.map((n) => n.id);
-    setProbeIds(ids);
-    runProbeJoin(ids);
-  };
-
   // --- firewall (single node) ---
   const openFirewall = async (n: any) => {
     setFwNode(n); setFwRes(null); setFwSel(new Set()); setFwBusy(true);
@@ -293,9 +249,6 @@ export function NodesPage() {
             title="批量更新多个节点的 Agent 到最新版"
           >
             <DownloadCloud size={15} /> 批量更新 Agent
-          </button>
-          <button className="btn" onClick={openProbe} title="把节点批量接入 Komari 探针">
-            <Radar size={15} /> 加入探针
           </button>
           <button
             className="btn"
@@ -512,69 +465,6 @@ export function NodesPage() {
                 </div>
               ))}
             </div>
-          )}
-        </Modal>
-      )}
-
-      {/* Join Komari probe modal */}
-      {probeOpen && (
-        <Modal title="加入探针（Komari）" wide onClose={() => setProbeOpen(false)}>
-          {probeCfg && !probeCfg.configured ? (
-            <div className="card" style={{ padding: 16 }}>
-              <p style={{ marginTop: 0 }}>未配置 Komari 探针。请先到「设置 → 探针 Komari」填写面板地址与 API Key。</p>
-              <a className="btn primary sm" href="/settings" style={{ textDecoration: 'none' }}>前往设置</a>
-            </div>
-          ) : (
-            <>
-              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 10 }}>
-                目标探针：<code className="mono">{probeCfg?.komari_url}</code>。Komari 节点名 = NodePanel 节点名；已在探针里的节点不会出现。
-              </div>
-              <div className="field">
-                <label>候选节点（在线且未已在探针，可多选 / 全选）</label>
-                <NodeSelect
-                  nodes={probeCands}
-                  value={probeIds}
-                  onChange={setProbeIds}
-                  onlineOnly
-                  placeholder={probeCands.length ? '选择要加入探针的节点…' : '没有可加入的节点（在线节点都已在探针）'}
-                />
-              </div>
-              {probeExisting.length > 0 && (
-                <div className="field">
-                  <label>已在探针中（无需加入，{probeExisting.length} 个）</label>
-                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                    {probeExisting.map((n: any) => (
-                      <span key={n.id} className="badge muted">✓ {n.name}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <div className="row" style={{ gap: 10, marginTop: 4 }}>
-                <button className="btn primary" onClick={doProbeJoin} disabled={probeBusy || probeIds.length === 0}>
-                  <Radar size={14} /> {probeBusy ? '加入中…' : '加入选中'}
-                </button>
-                <button className="btn" onClick={probeJoinAll} disabled={probeBusy || probeCands.length === 0}>
-                  <Radar size={14} /> 全部加入
-                </button>
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 8 }}>
-                每个节点会在 Komari 创建同名 client 并安装 komari-agent 接入探针，约 30-90 秒/节点。
-              </div>
-              {probeRes && !probeBusy && (
-                <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {probeRes.map((x) => (
-                    <div key={x.node_id} className="row" style={{ justifyContent: 'space-between', padding: '8px 12px', border: '1px solid var(--border-color)', borderRadius: 8 }}>
-                      <span style={{ fontSize: 13 }}>{x.name || x.node_id}</span>
-                      {x.ok ? (
-                        <span style={{ fontSize: 12, color: 'var(--success, #2e7d32)' }}>✓ 已加入</span>
-                      ) : (
-                        <span style={{ fontSize: 12, color: 'var(--danger, #c0392b)' }}>✗ {x.err || '失败'}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
           )}
         </Modal>
       )}

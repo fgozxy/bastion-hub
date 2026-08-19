@@ -150,8 +150,6 @@ export const api = {
     regenerate: (id: string) => post(`/api/nodes/${id}/regenerate`),
     updateAgent: (id: string) => post(`/api/nodes/${id}/update-agent`),
     updateAgents: (node_ids: string[]) => post('/api/nodes/update-agents', { node_ids }),
-    probeCandidates: () => get('/api/nodes/probe/candidates'),
-    probeJoin: (node_ids: string[]) => post('/api/nodes/probe/join', { node_ids }),
     remove: (id: string) => del(`/api/nodes/${id}`),
   },
   health: {
@@ -252,10 +250,6 @@ export const api = {
       put('/api/settings/excludes', { excludes }),
     putContainerMonitor: (enabled: boolean, interval_seconds: number) =>
       put('/api/settings/container-monitor', { enabled, interval_seconds }),
-    putKomari: (base_url: string, api_key: string, install_url: string) =>
-      put('/api/settings/komari', { base_url, api_key, install_url }),
-    testKomari: (base_url?: string, api_key?: string) =>
-      post('/api/settings/komari/test', base_url || api_key ? { base_url, api_key } : {}),
     putGithub: (token: string, owner: string, repo: string, branch: string, force: boolean) =>
       put('/api/settings/github', { token, owner, repo, branch, force }),
     githubPushProject: (token: string, owner: string, repo: string, branch: string, force: boolean) =>

@@ -2,8 +2,7 @@
 // installs Netdata on selected nodes, polls each node's local Netdata via the
 // agent (MsgHTTPFetch, curl fallback on old agents), serves cached metrics to
 // the frontend, and evaluates per-node alert thresholds — pushing Telegram on a
-// sustained breach. This catches load/iowait/swap events that Komari cannot
-// alert on.
+// sustained breach.
 package health
 
 import (

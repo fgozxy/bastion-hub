@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, Send, RefreshCw, Github, UploadCloud, Radar } from 'lucide-react';
+import { Save, Send, RefreshCw, Github, UploadCloud } from 'lucide-react';
 import { api } from '../services/api';
 import { notify } from '../stores';
 import { MultiSelect } from '../components/MultiSelect';
@@ -17,7 +17,6 @@ export function SettingsPage() {
           ['container', '容器更新'],
           ['monitor', '容器监控'],
           ['backup', 'GitHub'],
-          ['komari', 'Komari'],
         ].map(([k, l]) => (
           <button
             key={k}
@@ -36,7 +35,6 @@ export function SettingsPage() {
       {tab === 'container' && <ContainerTab />}
       {tab === 'monitor' && <MonitorTab />}
       {tab === 'backup' && <GithubTab />}
-      {tab === 'komari' && <KomariTab />}
     </div>
   );
 }
@@ -480,82 +478,6 @@ function GithubTab() {
           {log}
         </pre>
       )}
-    </div>
-  );
-}
-
-function KomariTab() {
-  const [base, setBase] = useState('');
-  const [key, setKey] = useState('');
-  const [install, setInstall] = useState('');
-  const [testing, setTesting] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    api.settings.all().then((r: any) => {
-      const k = r?.komari;
-      if (k?.base_url) setBase(k.base_url);
-      if (k?.api_key) setKey(k.api_key);
-      if (k?.install_url) setInstall(k.install_url);
-    }).catch(() => {});
-  }, []);
-
-  const test = async () => {
-    setTesting(true);
-    try {
-      const r: any = await api.settings.testKomari(base || undefined, key || undefined);
-      notify(`连接成功：Komari 现有 ${r?.count ?? 0} 个节点`, 'success');
-    } catch (e: any) {
-      notify(e?.response?.data?.error || '测试失败', 'error');
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await api.settings.putKomari(base, key, install);
-      notify('已保存 Komari 配置', 'success');
-    } catch (e: any) {
-      notify(e?.response?.data?.error || '保存失败', 'error');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="card" style={{ padding: 18, maxWidth: 620 }}>
-      <div className="row" style={{ gap: 10, marginBottom: 8 }}>
-        <Radar size={18} color="var(--primary)" />
-        <strong>Komari 探针集成</strong>
-      </div>
-      <p style={{ marginTop: 0, color: 'var(--text-secondary)' }}>
-        在「节点」页用「加入探针」把节点批量接入 Komari 探针。Komari 节点名 = NodePanel 节点名；已在探针里的节点自动从候选中排除。
-      </p>
-      <div className="field">
-        <label>Komari 面板地址</label>
-        <input className="input" value={base} onChange={(e) => setBase(e.target.value)} placeholder="https://komari.example.com" />
-      </div>
-      <div className="field">
-        <label>API Key</label>
-        <input className="input" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="Komari 后台 → 设置 → API Key（≥12 字符）" />
-      </div>
-      <div className="field">
-        <label>Agent 安装脚本（可选，默认官方）</label>
-        <input className="input mono" value={install} onChange={(e) => setInstall(e.target.value)} placeholder="https://raw.githubusercontent.com/komari-monitor/komari-agent/master/install.sh" />
-        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4 }}>
-          节点访问 GitHub 受限时可改为镜像 / ghproxy。令牌明文存于本机面板数据库（与其它集成一致）。
-        </div>
-      </div>
-      <div className="row" style={{ gap: 10, marginTop: 12 }}>
-        <button className="btn primary" onClick={save} disabled={saving || !base || !key}>
-          <Save size={14} /> {saving ? '保存中…' : '保存'}
-        </button>
-        <button className="btn" onClick={test} disabled={testing || !base || !key}>
-          {testing ? '测试中…' : '测试连接'}
-        </button>
-      </div>
     </div>
   );
 }

@@ -15,7 +15,6 @@ import (
 
 	"nodepanel/master/internal/auth"
 	"nodepanel/master/internal/httpx"
-	"nodepanel/master/internal/komari"
 	"nodepanel/master/internal/store"
 	"nodepanel/master/internal/targets"
 	"nodepanel/master/internal/telegram"
@@ -35,7 +34,7 @@ func (s *Service) GetAll(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{}
 	for k, v := range all {
 		// Never expose a legacy disaster-recovery key left by an older version.
-		if k == "peer_key" || k == "cloudflare" {
+		if k == "peer_key" || k == "cloudflare" || k == "komari" {
 			continue
 		}
 		var parsed any
@@ -150,55 +149,6 @@ func (s *Service) PutContainerMonitor(w http.ResponseWriter, r *http.Request) {
 	b, _ := json.Marshal(map[string]any{"enabled": body.Enabled, "interval_seconds": body.IntervalSeconds})
 	_ = s.Store.SetSetting(r.Context(), "container_monitor", string(b))
 	httpx.OK(w, map[string]string{"ok": "1"})
-}
-
-// PutKomari PUT /api/settings/komari {base_url, api_key, install_url}
-// Stores the Komari probe integration config. install_url empty → official script.
-func (s *Service) PutKomari(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		BaseURL    string `json:"base_url"`
-		APIKey     string `json:"api_key"`
-		InstallURL string `json:"install_url"`
-	}
-	if err := httpx.ReadJSON(r, &body); err != nil {
-		httpx.Err(w, 400, "invalid body")
-		return
-	}
-	body.BaseURL = strings.TrimRight(strings.TrimSpace(body.BaseURL), "/")
-	body.APIKey = strings.TrimSpace(body.APIKey)
-	if body.InstallURL == "" {
-		body.InstallURL = komari.DefaultInstallURL
-	}
-	b, _ := json.Marshal(map[string]any{"base_url": body.BaseURL, "api_key": body.APIKey, "install_url": body.InstallURL})
-	_ = s.Store.SetSetting(r.Context(), "komari", string(b))
-	httpx.OK(w, map[string]string{"ok": "1"})
-}
-
-// TestKomari POST /api/settings/komari/test {base_url?, api_key?} — validates the
-// key by listing Komari clients; returns the count.
-func (s *Service) TestKomari(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
-	}
-	_ = httpx.ReadJSON(r, &body)
-	cfg := komari.LoadConfig(r.Context(), s.Store)
-	if strings.TrimSpace(body.BaseURL) != "" {
-		cfg.BaseURL = strings.TrimRight(strings.TrimSpace(body.BaseURL), "/")
-	}
-	if strings.TrimSpace(body.APIKey) != "" {
-		cfg.APIKey = strings.TrimSpace(body.APIKey)
-	}
-	if cfg.BaseURL == "" || cfg.APIKey == "" {
-		httpx.Err(w, 400, "请填写 Komari 地址与 API Key")
-		return
-	}
-	cls, err := cfg.Client().ListClients(r.Context())
-	if err != nil {
-		httpx.Err(w, 502, "连接 Komari 失败: "+err.Error())
-		return
-	}
-	httpx.OK(w, map[string]any{"count": len(cls)})
 }
 
 // --- targets ---
