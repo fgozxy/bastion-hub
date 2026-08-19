@@ -310,6 +310,11 @@ func TestContainerUpdateReportWorthSending(t *testing.T) {
 			want:  true,
 		},
 		{
+			name:  "schedule reconciled",
+			stats: containerUpdateStats{configured: 1, attempted: 1, succeeded: 1, removed: []string{"n1/gone"}},
+			want:  true,
+		},
+		{
 			name:  "container failures",
 			stats: containerUpdateStats{configured: 1, attempted: 1, failed: 1, failures: []string{"n1/app: pull failed"}},
 			want:  true,
@@ -419,7 +424,7 @@ func TestRunContainerUpdateNodeNoCandidatesSucceedsWithoutUpdate(t *testing.T) {
 	}
 }
 
-func TestRunContainerUpdateNodeReportsMissingSelectedContainer(t *testing.T) {
+func TestRunContainerUpdateNodeMarksMissingSelectedContainerForRemoval(t *testing.T) {
 	st := openSchedulerTestStore(t)
 	hub := agenthub.New(agenthub.Handlers{})
 	client := connectSchedulerTestAgent(t, hub, "n1")
@@ -450,9 +455,78 @@ func TestRunContainerUpdateNodeReportsMissingSelectedContainer(t *testing.T) {
 	if err := <-responseErr; err != nil {
 		t.Fatal(err)
 	}
-	if out.succeeded || out.failed != 1 || len(out.failures) != 1 ||
-		!strings.Contains(out.failures[0], "n1/old-name: configured container missing") {
+	if !out.succeeded || !out.scanComplete || out.failed != 0 || len(out.failures) != 0 ||
+		len(out.removed) != 1 || out.removed[0] != "old-name" {
 		t.Fatalf("outcome = %+v", out)
+	}
+}
+
+func TestReconcileConfiguredContainerNamesRelinksComposeV1Name(t *testing.T) {
+	allow := map[string]struct{}{
+		"cloudflare-imgbed_imgbed_1": {},
+		"deleted":                    {},
+	}
+	items := []proto.ContainerScanItem{
+		{Name: "cloudflare-imgbed-imgbed-1"},
+		{Name: "other"},
+	}
+	effective, relinked, removed := reconcileConfiguredContainerNames(allow, items)
+	if _, ok := effective["cloudflare-imgbed-imgbed-1"]; !ok || len(effective) != 1 {
+		t.Fatalf("effective = %#v", effective)
+	}
+	if relinked["cloudflare-imgbed_imgbed_1"] != "cloudflare-imgbed-imgbed-1" {
+		t.Fatalf("relinked = %#v", relinked)
+	}
+	if len(removed) != 1 || removed[0] != "deleted" {
+		t.Fatalf("removed = %#v", removed)
+	}
+}
+
+func TestReconcileConfiguredContainerNamesDoesNotGuessAmbiguousMatch(t *testing.T) {
+	allow := map[string]struct{}{"a__b": {}}
+	items := []proto.ContainerScanItem{{Name: "a-_b"}, {Name: "a_-b"}}
+	effective, relinked, removed := reconcileConfiguredContainerNames(allow, items)
+	if len(effective) != 0 || len(relinked) != 0 || len(removed) != 1 || removed[0] != "a__b" {
+		t.Fatalf("effective=%#v relinked=%#v removed=%#v", effective, relinked, removed)
+	}
+}
+
+func TestPersistReconciledContainerTargetsRelinksAndPrunes(t *testing.T) {
+	st := openSchedulerTestStore(t)
+	ctx := context.Background()
+	currentID := strings.Repeat("c", 64)
+	if err := st.ReplaceNodeContainers(ctx, "jp", []store.Container{{ContainerID: currentID, Name: "cloudflare-imgbed-imgbed-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := containerCfg{Containers: []backupTarget{
+		{NodeID: "jp", Container: "old-id", Name: "cloudflare-imgbed_imgbed_1"},
+		{NodeID: "phoenix", Container: "gone-id", Name: "sub2api"},
+		{NodeID: "other", Container: "keep-id", Name: "keep"},
+	}}
+	raw, _ := json.Marshal(cfg)
+	schedule := store.Schedule{ID: "reconcile", Type: "container_update", Config: string(raw), Cron: "0 */4 * * *", Enabled: true}
+	if err := st.CreateSchedule(ctx, &schedule); err != nil {
+		t.Fatal(err)
+	}
+	sc := New(st, nil, nil, nil)
+	err := sc.persistReconciledContainerTargets(ctx, &schedule, &cfg,
+		map[string]map[string]string{"jp": {"cloudflare-imgbed_imgbed_1": "cloudflare-imgbed-imgbed-1"}},
+		map[string][]string{"phoenix": {"sub2api"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Containers) != 2 {
+		t.Fatalf("containers = %#v", cfg.Containers)
+	}
+	if cfg.Containers[0].Name != "cloudflare-imgbed-imgbed-1" || cfg.Containers[0].Container != currentID {
+		t.Fatalf("relinked target = %#v", cfg.Containers[0])
+	}
+	if cfg.Containers[1].NodeID != "other" || cfg.Containers[1].Name != "keep" {
+		t.Fatalf("unscanned target was not preserved: %#v", cfg.Containers[1])
+	}
+	schedules, err := st.ListSchedules(ctx)
+	if err != nil || len(schedules) != 1 || !strings.Contains(schedules[0].Config, "cloudflare-imgbed-imgbed-1") || strings.Contains(schedules[0].Config, "sub2api") {
+		t.Fatalf("stored schedule = %#v, err=%v", schedules, err)
 	}
 }
 

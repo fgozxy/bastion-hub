@@ -444,6 +444,8 @@ type containerUpdateStats struct {
 	skipped      int
 	failed       int
 	failures     []string // "nodeID/container: reason" or "nodeID: reason"
+	relinked     []string // "nodeID/old → new"
+	removed      []string // "nodeID/name" targets pruned after a complete scan
 	nodeNames    map[string]string
 }
 
@@ -460,6 +462,9 @@ type containerUpdateOutcome struct {
 	skipped      int
 	failed       int
 	failures     []string
+	scanComplete bool
+	relinked     map[string]string // configured old name -> current name
+	removed      []string
 }
 
 func (sc *Scheduler) runContainerUpdate(s store.Schedule) {
@@ -517,6 +522,8 @@ func (sc *Scheduler) runContainerUpdate(s store.Schedule) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	stats := containerUpdateStats{configured: len(nodeIDs), nodeNames: nodeNames}
+	relinkedByNode := make(map[string]map[string]string)
+	removedByNode := make(map[string][]string)
 	stamp := time.Now().Format("150405")
 	for _, nid := range nodeIDs {
 		if !sc.hub.Online(nid) {
@@ -551,9 +558,29 @@ func (sc *Scheduler) runContainerUpdate(s store.Schedule) {
 			stats.skipped += outcome.skipped
 			stats.failed += outcome.failed
 			stats.failures = append(stats.failures, outcome.failures...)
+			if outcome.scanComplete {
+				if len(outcome.relinked) > 0 {
+					relinkedByNode[nid] = outcome.relinked
+					for old, current := range outcome.relinked {
+						stats.relinked = append(stats.relinked, nid+"/"+old+" → "+current)
+					}
+				}
+				if len(outcome.removed) > 0 {
+					removedByNode[nid] = outcome.removed
+					for _, name := range outcome.removed {
+						stats.removed = append(stats.removed, nid+"/"+name)
+					}
+				}
+			}
 		}()
 	}
 	wg.Wait()
+
+	if len(relinkedByNode) > 0 || len(removedByNode) > 0 {
+		if err := sc.persistReconciledContainerTargets(ctx, &s, &cfg, relinkedByNode, removedByNode); err != nil {
+			stats.failures = append(stats.failures, "计划自动清理保存失败: "+err.Error())
+		}
+	}
 
 	_ = sc.store.MarkScheduleRun(ctx, s.ID, time.Now().Unix())
 	// Quiet success with zero updates is intentionally silent: every cron fire
@@ -593,32 +620,20 @@ func (sc *Scheduler) runContainerUpdateNode(scheduleID, nodeID, label, stamp str
 		out.failures = append(out.failures, nodeID+": scan cache update failed")
 		return out
 	}
+	out.scanComplete = true
 
 	// Selective schedules only classify/update the chosen containers; the full
 	// scan above still refreshes the node's inventory cache.
 	classifyItems := items
 	if len(allowNames) > 0 {
-		classifyItems = make([]proto.ContainerScanItem, 0, len(allowNames))
-		seen := make(map[string]struct{}, len(allowNames))
+		effective, relinked, removed := reconcileConfiguredContainerNames(allowNames, items)
+		out.relinked = relinked
+		out.removed = removed
+		classifyItems = make([]proto.ContainerScanItem, 0, len(effective))
 		for _, it := range items {
-			if _, ok := allowNames[it.Name]; ok {
+			if _, ok := effective[it.Name]; ok {
 				classifyItems = append(classifyItems, it)
-				seen[it.Name] = struct{}{}
 			}
-		}
-		// Container names are the stable schedule key across normal recreates,
-		// but Compose project/name migrations can still invalidate them. Never
-		// silently turn a stale configured target into a successful no-op.
-		missing := make([]string, 0)
-		for name := range allowNames {
-			if _, ok := seen[name]; !ok {
-				missing = append(missing, name)
-			}
-		}
-		sort.Strings(missing)
-		for _, name := range missing {
-			out.failed++
-			out.failures = append(out.failures, nodeID+"/"+name+": configured container missing from scan")
 		}
 	}
 
@@ -721,6 +736,105 @@ func (sc *Scheduler) runContainerUpdateNode(scheduleID, nodeID, label, stamp str
 	}
 	out.succeeded = len(out.failures) == 0
 	return out
+}
+
+// reconcileConfiguredContainerNames compares a selective schedule with one
+// complete node scan. Exact names are retained. A unique Compose v1/v2 naming
+// migration (underscores versus hyphens) is relinked; targets with no match are
+// returned for removal. Callers must never use this after a failed/partial scan.
+func reconcileConfiguredContainerNames(allow map[string]struct{}, items []proto.ContainerScanItem) (map[string]struct{}, map[string]string, []string) {
+	current := make(map[string]struct{}, len(items))
+	byNormalized := make(map[string][]string, len(items))
+	for _, item := range items {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		current[name] = struct{}{}
+		key := normalizeComposeContainerName(name)
+		byNormalized[key] = append(byNormalized[key], name)
+	}
+
+	effective := make(map[string]struct{}, len(allow))
+	relinked := make(map[string]string)
+	var removed []string
+	for configured := range allow {
+		if _, ok := current[configured]; ok {
+			effective[configured] = struct{}{}
+			continue
+		}
+		matches := byNormalized[normalizeComposeContainerName(configured)]
+		if len(matches) == 1 && matches[0] != configured {
+			effective[matches[0]] = struct{}{}
+			relinked[configured] = matches[0]
+			continue
+		}
+		removed = append(removed, configured)
+	}
+	sort.Strings(removed)
+	return effective, relinked, removed
+}
+
+func normalizeComposeContainerName(name string) string {
+	return strings.ReplaceAll(strings.TrimSpace(name), "_", "-")
+}
+
+// persistReconciledContainerTargets makes successful scans authoritative for
+// selective update targets. Offline/unavailable nodes never enter these maps,
+// so their configuration is preserved. If every target disappeared, the empty
+// schedule is disabled instead of continuing to fire as a silent no-op.
+func (sc *Scheduler) persistReconciledContainerTargets(ctx context.Context, schedule *store.Schedule, cfg *containerCfg, relinked map[string]map[string]string, removed map[string][]string) error {
+	removeSet := make(map[string]bool)
+	for nodeID, names := range removed {
+		for _, name := range names {
+			removeSet[nodeID+"\x00"+name] = true
+		}
+	}
+
+	next := make([]backupTarget, 0, len(cfg.Containers))
+	seen := make(map[string]bool, len(cfg.Containers))
+	for _, target := range cfg.Containers {
+		oldName := strings.TrimSpace(target.Name)
+		key := target.NodeID + "\x00" + oldName
+		if removeSet[key] {
+			continue
+		}
+		if current := relinked[target.NodeID][oldName]; current != "" {
+			target.Name = current
+			if id := sc.store.ContainerIDByName(ctx, target.NodeID, current); id != "" {
+				target.Container = id
+			}
+		}
+		dedupeKey := target.NodeID + "\x00" + target.Name
+		if seen[dedupeKey] {
+			continue
+		}
+		seen[dedupeKey] = true
+		next = append(next, target)
+	}
+	cfg.Containers = next
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	schedule.Config = string(raw)
+	if len(next) == 0 {
+		schedule.Enabled = false
+	}
+	if err := sc.store.UpdateSchedule(ctx, schedule); err != nil {
+		return err
+	}
+	sc.store.Audit(ctx, "system", "schedule.container_update.reconcile",
+		fmt.Sprintf("schedule=%s relinked=%d removed=%d remaining=%d", schedule.ID, countRelinked(relinked), len(removeSet), len(next)))
+	return nil
+}
+
+func countRelinked(values map[string]map[string]string) int {
+	total := 0
+	for _, names := range values {
+		total += len(names)
+	}
+	return total
 }
 
 // candDesc is a version-upgrade candidate produced by classifyUpdateCandidates,
@@ -924,10 +1038,12 @@ func containerResultFailures(res proto.ContainerResult) map[string]string {
 // run produced anything the operator needs to know about. Quiet success with
 // zero updates is intentionally silent — every cron fire would otherwise spam
 // Telegram with "✅ 成功 N / 更新 0 / 失败 0". Push only when containers were
-// actually updated, something failed, a node was offline, or Docker was
-// unavailable on a node.
+// actually updated, the plan was reconciled, something failed, a node was
+// offline, or Docker was unavailable on a node.
 func containerUpdateReportWorthSending(stats containerUpdateStats) bool {
 	return stats.updated > 0 ||
+		len(stats.relinked) > 0 ||
+		len(stats.removed) > 0 ||
 		stats.failed > 0 ||
 		len(stats.failures) > 0 ||
 		len(stats.offline) > 0 ||
@@ -946,6 +1062,9 @@ func formatContainerUpdateReport(stats containerUpdateStats) string {
 	fmt.Fprintf(&b, "%s 容器定时更新\n", status)
 	fmt.Fprintf(&b, "节点 成功 %d · 离线 %d\n", stats.succeeded, len(stats.offline))
 	fmt.Fprintf(&b, "容器 更新 %d · 失败 %d", stats.updated, stats.failed)
+	if len(stats.relinked) > 0 || len(stats.removed) > 0 {
+		fmt.Fprintf(&b, "\n计划 重绑 %d · 清理 %d", len(stats.relinked), len(stats.removed))
+	}
 
 	// Append the concrete node/container lines so the operator can see what
 	// actually changed, instead of an opaque count that looks the same every run.
@@ -968,6 +1087,24 @@ func formatContainerUpdateReport(stats containerUpdateStats) string {
 			if t := transitions[ref]; t != "" {
 				b.WriteString("  " + t)
 			}
+		}
+	}
+	if len(stats.relinked) > 0 {
+		lines := append([]string(nil), stats.relinked...)
+		sort.Strings(lines)
+		b.WriteString("\n\n自动重绑:")
+		for _, line := range lines {
+			b.WriteString("\n· ")
+			b.WriteString(formatNodeContainerRef(line, stats.nodeNames))
+		}
+	}
+	if len(stats.removed) > 0 {
+		lines := append([]string(nil), stats.removed...)
+		sort.Strings(lines)
+		b.WriteString("\n\n自动清理:")
+		for _, line := range lines {
+			b.WriteString("\n· ")
+			b.WriteString(formatNodeContainerRef(line, stats.nodeNames))
 		}
 	}
 	if len(stats.offline) > 0 {
