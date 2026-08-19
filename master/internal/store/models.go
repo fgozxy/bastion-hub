@@ -18,17 +18,8 @@ type Node struct {
 	AgentVersion    string `json:"agent_version"`
 	LastSeen        int64  `json:"last_seen"`
 	CreatedAt       int64  `json:"created_at"`
-	SshPort         string `json:"ssh_port"`               // admin-configured SSH port for this node (credential scan / future use)
-	TunnelID        string `json:"tunnel_id,omitempty"`    // this node's Cloudflare Tunnel id (agent-reported, for container migration's domain move)
-	BaseDomain      string `json:"base_domain,omitempty"`  // this node's primary base domain for migrated-in containers (a.a.com → a.<base_domain>), admin-configured
-	IngressType     string `json:"ingress_type,omitempty"` // declared public-entry method: "cftunnel" (default/empty) | "external" (NPM/manual, no tunnel). Drives UI/feature gating; runtime safety still keys off TunnelID.
+	SshPort         string `json:"ssh_port"`
 }
-
-// SupportsCFDomain reports whether this node is *declared* to front containers
-// via a Cloudflare Tunnel (so domain-follow migration and base_domain config
-// apply). Empty is treated as cftunnel — the common case — so existing nodes
-// keep working until an admin marks an NPM node as "external".
-func (n *Node) SupportsCFDomain() bool { return n.IngressType != "external" }
 
 type User struct {
 	ID           string `json:"id"`
@@ -153,10 +144,9 @@ type Container struct {
 	Created     int64  `json:"created"`
 	Updated     int64  `json:"updated"`
 	UpdateType  string `json:"update_type"`
-	HasUpdate   int    `json:"has_update"`           // scan cache: -1 unknown, 0 digest matches, 1 remote tag content differs
-	Note        string `json:"note"`                 // scan cache note (e.g. reason)
-	ScannedAt   int64  `json:"scanned_at"`           // unix seconds; 0 means never scanned
-	HostPorts   []int  `json:"host_ports,omitempty"` // published host ports (agent >= 1.9.2), for migrate domain pre-plan
+	HasUpdate   int    `json:"has_update"` // scan cache: -1 unknown, 0 digest matches, 1 remote tag content differs
+	Note        string `json:"note"`       // scan cache note (e.g. reason)
+	ScannedAt   int64  `json:"scanned_at"` // unix seconds; 0 means never scanned
 }
 
 // HealthNode marks a node as Netdata-enabled in the health panel.

@@ -123,61 +123,6 @@ func (s *Service) Rename(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, map[string]string{"ok": "1"})
 }
 
-// SetBaseDomain PUT /api/nodes/{id}/base-domain {base_domain}
-// Sets the node's primary base domain, used when migrating containers in to
-// rewrite their public hostname (a.a.com → a.<base_domain>). Empty clears it.
-func (s *Service) SetBaseDomain(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	var body struct {
-		BaseDomain string `json:"base_domain"`
-	}
-	if err := httpx.ReadJSON(r, &body); err != nil {
-		httpx.Err(w, 400, "invalid body")
-		return
-	}
-	base := strings.TrimSpace(body.BaseDomain)
-	if err := s.Store.SetNodeBaseDomain(r.Context(), id, base); err != nil {
-		httpx.InternalErr(w, err.Error())
-		return
-	}
-	s.Store.Audit(r.Context(), "admin", "node.base_domain", id+": "+base)
-	if n, _ := s.Store.GetNode(r.Context(), id); n != nil {
-		s.Browser.Broadcast(browserhub.NewOut("node.update", s.view(n, false)))
-	}
-	httpx.OK(w, map[string]string{"ok": "1"})
-}
-
-// SetIngressType PUT /api/nodes/{id}/ingress-type {ingress_type}
-// Sets the node's declared public-entry method: "cftunnel" (default/empty) or
-// "external" (NPM/manual, no tunnel). Admin-set policy that drives feature
-// gating (see Node.SupportsCFDomain) — runtime safety still keys off TunnelID.
-func (s *Service) SetIngressType(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	var body struct {
-		IngressType string `json:"ingress_type"`
-	}
-	if err := httpx.ReadJSON(r, &body); err != nil {
-		httpx.Err(w, 400, "invalid body")
-		return
-	}
-	t := strings.TrimSpace(body.IngressType)
-	switch t {
-	case "", "cftunnel", "external":
-	default:
-		httpx.Err(w, 400, "ingress_type 必须是 cftunnel 或 external")
-		return
-	}
-	if err := s.Store.SetNodeIngressType(r.Context(), id, t); err != nil {
-		httpx.InternalErr(w, err.Error())
-		return
-	}
-	s.Store.Audit(r.Context(), "admin", "node.ingress_type", id+": "+t)
-	if n, _ := s.Store.GetNode(r.Context(), id); n != nil {
-		s.Browser.Broadcast(browserhub.NewOut("node.update", s.view(n, false)))
-	}
-	httpx.OK(w, map[string]string{"ok": "1"})
-}
-
 // Regenerate POST /api/nodes/{id}/regenerate
 func (s *Service) Regenerate(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -466,9 +411,10 @@ func (s *Service) ExecSync(ctx context.Context, nodeID, cmd string, timeout time
 }
 
 // firewallDetectCmd reports a node's firewall in parseable sections:
-//   =FW=     type=ufw|firewalld|none  + active=yes|no
-//   =RULES=  ufw status (or firewall-cmd --list-ports)
-//   =LISTEN= ss -ltnH (public listening sockets)
+//
+//	=FW=     type=ufw|firewalld|none  + active=yes|no
+//	=RULES=  ufw status (or firewall-cmd --list-ports)
+//	=LISTEN= ss -ltnH (public listening sockets)
 func firewallDetectCmd() string {
 	return `echo =FW=; ` +
 		`if command -v ufw >/dev/null 2>&1; then echo type=ufw; ` +

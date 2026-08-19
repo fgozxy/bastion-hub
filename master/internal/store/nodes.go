@@ -33,7 +33,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 		`SELECT id,name,COALESCE(agent_token,''),status,COALESCE(hostname,''),COALESCE(os,''),
 			COALESCE(arch,''),COALESCE(kernel,''),COALESCE(ipv4,''),COALESCE(ipv6,''),
 			COALESCE(country_code,''),COALESCE(country,''),COALESCE(agent_version,''),
-			COALESCE(last_seen,0),created_at,COALESCE(ssh_port,''),COALESCE(tunnel_id,''),COALESCE(base_domain,''),COALESCE(ingress_type,'') FROM nodes ORDER BY created_at DESC`)
+			COALESCE(last_seen,0),created_at,COALESCE(ssh_port,'') FROM nodes ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 		var n Node
 		if err := rows.Scan(&n.ID, &n.Name, &n.AgentToken, &n.Status, &n.Hostname, &n.OS,
 			&n.Arch, &n.Kernel, &n.IPv4, &n.IPv6, &n.CountryCode, &n.Country,
-			&n.AgentVersion, &n.LastSeen, &n.CreatedAt, &n.SshPort, &n.TunnelID, &n.BaseDomain, &n.IngressType); err != nil {
+			&n.AgentVersion, &n.LastSeen, &n.CreatedAt, &n.SshPort); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -56,7 +56,7 @@ func (s *Store) GetNode(ctx context.Context, id string) (*Node, error) {
 	return s.getNode(ctx, `SELECT id,name,COALESCE(agent_token,''),status,COALESCE(hostname,''),
 		COALESCE(os,''),COALESCE(arch,''),COALESCE(kernel,''),COALESCE(ipv4,''),COALESCE(ipv6,''),
 		COALESCE(country_code,''),COALESCE(country,''),COALESCE(agent_version,''),
-		COALESCE(last_seen,0),created_at,COALESCE(ssh_port,''),COALESCE(tunnel_id,''),COALESCE(base_domain,''),COALESCE(ingress_type,'') FROM nodes WHERE id=?`, id)
+		COALESCE(last_seen,0),created_at,COALESCE(ssh_port,'') FROM nodes WHERE id=?`, id)
 }
 
 // GetNodeByEnrollment looks up a node by its enrollment token (used at agent enroll).
@@ -64,7 +64,7 @@ func (s *Store) GetNodeByEnrollment(ctx context.Context, token string) (*Node, e
 	return s.getNode(ctx, `SELECT id,name,COALESCE(agent_token,''),status,COALESCE(hostname,''),
 		COALESCE(os,''),COALESCE(arch,''),COALESCE(kernel,''),COALESCE(ipv4,''),COALESCE(ipv6,''),
 		COALESCE(country_code,''),COALESCE(country,''),COALESCE(agent_version,''),
-		COALESCE(last_seen,0),created_at,COALESCE(ssh_port,''),COALESCE(tunnel_id,''),COALESCE(base_domain,''),COALESCE(ingress_type,'') FROM nodes WHERE enrollment_token=?`, token)
+		COALESCE(last_seen,0),created_at,COALESCE(ssh_port,'') FROM nodes WHERE enrollment_token=?`, token)
 }
 
 // GetNodeByAgentToken looks up a node by its long-lived agent token (used at WS connect).
@@ -72,7 +72,7 @@ func (s *Store) GetNodeByAgentToken(ctx context.Context, token string) (*Node, e
 	return s.getNode(ctx, `SELECT id,name,COALESCE(agent_token,''),status,COALESCE(hostname,''),
 		COALESCE(os,''),COALESCE(arch,''),COALESCE(kernel,''),COALESCE(ipv4,''),COALESCE(ipv6,''),
 		COALESCE(country_code,''),COALESCE(country,''),COALESCE(agent_version,''),
-		COALESCE(last_seen,0),created_at,COALESCE(ssh_port,''),COALESCE(tunnel_id,''),COALESCE(base_domain,''),COALESCE(ingress_type,'') FROM nodes WHERE agent_token=?`, token)
+		COALESCE(last_seen,0),created_at,COALESCE(ssh_port,'') FROM nodes WHERE agent_token=?`, token)
 }
 
 func (s *Store) getNode(ctx context.Context, q string, args ...any) (*Node, error) {
@@ -80,7 +80,7 @@ func (s *Store) getNode(ctx context.Context, q string, args ...any) (*Node, erro
 	var n Node
 	var last sql.NullInt64
 	err := row.Scan(&n.ID, &n.Name, &n.AgentToken, &n.Status, &n.Hostname, &n.OS, &n.Arch,
-		&n.Kernel, &n.IPv4, &n.IPv6, &n.CountryCode, &n.Country, &n.AgentVersion, &last, &n.CreatedAt, &n.SshPort, &n.TunnelID, &n.BaseDomain, &n.IngressType)
+		&n.Kernel, &n.IPv4, &n.IPv6, &n.CountryCode, &n.Country, &n.AgentVersion, &last, &n.CreatedAt, &n.SshPort)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -91,29 +91,6 @@ func (s *Store) getNode(ctx context.Context, q string, args ...any) (*Node, erro
 		n.LastSeen = last.Int64
 	}
 	return &n, nil
-}
-
-// SetNodeTunnelID caches a node's Cloudflare Tunnel id (reported by agents >= 1.9.0
-// in the periodic container inventory). Used by container migration to move a
-// domain between tunnels. No-op when empty (clears nothing — id is stable).
-func (s *Store) SetNodeTunnelID(ctx context.Context, nodeID, tunnelID string) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE nodes SET tunnel_id=? WHERE id=?`, tunnelID, nodeID)
-	return err
-}
-
-// SetNodeBaseDomain sets a node's primary base domain used when migrating
-// containers in (their public hostname is rewritten to <prefix>.<base_domain>).
-func (s *Store) SetNodeBaseDomain(ctx context.Context, nodeID, baseDomain string) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE nodes SET base_domain=? WHERE id=?`, baseDomain, nodeID)
-	return err
-}
-
-// SetNodeIngressType sets a node's declared public-entry method. Admin-set
-// policy that drives feature gating (see Node.SupportsCFDomain). "" maps to the
-// default cftunnel behavior.
-func (s *Store) SetNodeIngressType(ctx context.Context, nodeID, ingressType string) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE nodes SET ingress_type=? WHERE id=?`, ingressType, nodeID)
-	return err
 }
 
 // SetAgentToken records the long-lived agent token issued at enroll.

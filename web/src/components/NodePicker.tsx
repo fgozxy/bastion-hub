@@ -174,9 +174,6 @@ function NodePickerModal({
                     ✓ 已安装
                   </span>
                 )}
-                {n.ingress_type === 'external' && (
-                  <span className="badge muted" style={{ fontSize: 11 }}>外部线路</span>
-                )}
                 {n.agent_version && (
                   <>
                     <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>v{n.agent_version}</span>

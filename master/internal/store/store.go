@@ -56,8 +56,7 @@ func (s *Store) migrate() error {
 			country TEXT,
 			agent_version TEXT,
 			last_seen INTEGER,
-			created_at INTEGER NOT NULL,
-			ingress_type TEXT
+			created_at INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS credentials (
 			id TEXT PRIMARY KEY,
@@ -203,36 +202,6 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_restore_jobs_target ON restore_jobs(target_node, started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_restore_jobs_backup ON restore_jobs(backup_id)`,
-		`CREATE TABLE IF NOT EXISTS migrate_jobs (
-			id TEXT PRIMARY KEY,
-			container TEXT,
-			image TEXT,
-			source_node TEXT NOT NULL,
-			target_node TEXT NOT NULL,
-			backup_id TEXT,
-			status TEXT NOT NULL,
-			stage TEXT,
-			detail TEXT,
-			error TEXT,
-			domains TEXT,
-			ports_remapped TEXT,
-			domain_moved INTEGER NOT NULL DEFAULT 0,
-			source_removed INTEGER NOT NULL DEFAULT 0,
-			bytes_total INTEGER NOT NULL DEFAULT 0,
-			bytes_done INTEGER NOT NULL DEFAULT 0,
-			percent INTEGER NOT NULL DEFAULT 0,
-			agent_version TEXT,
-			actor TEXT,
-			started_at INTEGER NOT NULL,
-			finished_at INTEGER
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_migrate_jobs_target ON migrate_jobs(target_node, started_at)`,
-		`CREATE TABLE IF NOT EXISTS tunnel_tokens (
-			tunnel_id TEXT PRIMARY KEY,
-			token TEXT NOT NULL,
-			node_id TEXT NOT NULL,
-			created_at INTEGER NOT NULL
-		)`,
 		// health_nodes marks which nodes have Netdata enabled in the health panel.
 		`CREATE TABLE IF NOT EXISTS health_nodes (
 			node_id TEXT PRIMARY KEY,
@@ -300,18 +269,6 @@ WHERE (container_name IS NULL OR container_name = '')
       SELECT 1 FROM containers c
       WHERE c.node_id = backups.node_id AND c.container_id = backups.container
   )`); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing("nodes", "tunnel_id", "TEXT"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing("nodes", "base_domain", "TEXT"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing("nodes", "ingress_type", "TEXT"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing("containers", "host_ports", "TEXT"); err != nil {
 		return err
 	}
 	if err := s.addColumnIfMissing("health_nodes", "cores", "INTEGER NOT NULL DEFAULT 0"); err != nil {

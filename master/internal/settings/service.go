@@ -14,12 +14,11 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"nodepanel/master/internal/auth"
-	"nodepanel/master/internal/cloudflare"
 	"nodepanel/master/internal/httpx"
 	"nodepanel/master/internal/komari"
 	"nodepanel/master/internal/store"
-	"nodepanel/master/internal/telegram"
 	"nodepanel/master/internal/targets"
+	"nodepanel/master/internal/telegram"
 )
 
 type Service struct {
@@ -36,7 +35,7 @@ func (s *Service) GetAll(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{}
 	for k, v := range all {
 		// Never expose a legacy disaster-recovery key left by an older version.
-		if k == "peer_key" {
+		if k == "peer_key" || k == "cloudflare" {
 			continue
 		}
 		var parsed any
@@ -153,35 +152,6 @@ func (s *Service) PutContainerMonitor(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, map[string]string{"ok": "1"})
 }
 
-// PutCloudflare PUT /api/settings/cloudflare {api_token}
-// Stores the Cloudflare API token used by container migration to re-point a
-// migrated container's public domain (tunnel ingress + DNS). Stored plaintext in
-// the settings table, same as the telegram/github tokens. Optional: if a token is
-// supplied we validate it can read the account before persisting.
-func (s *Service) PutCloudflare(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		APIToken string `json:"api_token"`
-	}
-	if err := httpx.ReadJSON(r, &body); err != nil {
-		httpx.Err(w, 400, "invalid body")
-		return
-	}
-	if strings.TrimSpace(body.APIToken) != "" {
-		// Validate the token resolves an account before saving.
-		c := cloudflare.New(body.APIToken)
-		if _, err := c.AccountID(r.Context()); err != nil {
-			httpx.Err(w, 400, "令牌无效或无 Cloudflare 账号权限: "+err.Error())
-			return
-		}
-	}
-	b, _ := json.Marshal(map[string]string{"api_token": strings.TrimSpace(body.APIToken)})
-	if err := s.Store.SetSetting(r.Context(), "cloudflare", string(b)); err != nil {
-		httpx.InternalErr(w, err.Error())
-		return
-	}
-	httpx.OK(w, map[string]string{"ok": "1"})
-}
-
 // PutKomari PUT /api/settings/komari {base_url, api_key, install_url}
 // Stores the Komari probe integration config. install_url empty → official script.
 func (s *Service) PutKomari(w http.ResponseWriter, r *http.Request) {
@@ -229,51 +199,6 @@ func (s *Service) TestKomari(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.OK(w, map[string]any{"count": len(cls)})
-}
-
-// TestCloudflare POST /api/settings/cloudflare/test {api_token?}
-// Validates the token (from the body, or the saved setting if omitted) by listing
-// the account's tunnels. Returns account id + tunnel names so the UI can confirm
-// the token has the access migration needs (Tunnel:Edit + DNS:Edit).
-func (s *Service) TestCloudflare(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		APIToken string `json:"api_token"`
-	}
-	_ = httpx.ReadJSON(r, &body)
-	tok := strings.TrimSpace(body.APIToken)
-	if tok == "" {
-		if raw, _ := s.Store.GetSetting(r.Context(), "cloudflare"); raw != "" {
-			var saved struct {
-				APIToken string `json:"api_token"`
-			}
-			_ = json.Unmarshal([]byte(raw), &saved)
-			tok = saved.APIToken
-		}
-	}
-	if tok == "" {
-		httpx.Err(w, 400, "未提供令牌，且未保存过 Cloudflare 令牌")
-		return
-	}
-	c := cloudflare.New(tok)
-	acct, err := c.AccountID(r.Context())
-	if err != nil {
-		httpx.Err(w, 502, "令牌无效或无账号权限: "+err.Error())
-		return
-	}
-	tunnels, err := c.ListTunnels(r.Context())
-	if err != nil {
-		httpx.Err(w, 502, "读取 tunnel 列表失败: "+err.Error())
-		return
-	}
-	type t struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}
-	out := make([]t, 0, len(tunnels))
-	for _, tn := range tunnels {
-		out = append(out, t{ID: tn.ID, Name: tn.Name})
-	}
-	httpx.OK(w, map[string]any{"account_id": acct, "count": len(out), "tunnels": out})
 }
 
 // --- targets ---

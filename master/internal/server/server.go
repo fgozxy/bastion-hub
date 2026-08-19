@@ -71,8 +71,6 @@ func Routes(d *Deps) http.Handler {
 		r.Get("/api/nodes", d.Nodes.List)
 		r.Post("/api/nodes", d.Nodes.Create)
 		r.Patch("/api/nodes/{id}", d.Nodes.Rename)
-		r.Put("/api/nodes/{id}/base-domain", d.Nodes.SetBaseDomain)
-		r.Put("/api/nodes/{id}/ingress-type", d.Nodes.SetIngressType)
 		r.Post("/api/nodes/{id}/regenerate", d.Nodes.Regenerate)
 		r.Post("/api/nodes/{id}/update-agent", d.Nodes.UpdateAgent)
 		r.Post("/api/nodes/update-agents", d.Nodes.UpdateAgents)
@@ -128,10 +126,6 @@ func Routes(d *Deps) http.Handler {
 		r.Get("/api/restore/container-backups", d.Backup.ContainerBackupsByName)
 		r.Post("/api/restore/preflight", d.Backup.Preflight)
 
-		r.Post("/api/containers/migrate", d.Backup.Migrate)
-		r.Post("/api/containers/migrate/domain-plan", d.Backup.DomainPlan)
-		r.Get("/api/migrate/jobs", d.Backup.ListMigrateJobs)
-
 		r.Get("/api/targets", d.Settings.ListTargets)
 		r.Post("/api/targets", d.Settings.CreateTarget)
 		r.Put("/api/targets/{id}", d.Settings.UpdateTarget)
@@ -154,11 +148,9 @@ func Routes(d *Deps) http.Handler {
 		r.Post("/api/settings/telegram/test", d.Settings.TestTelegram)
 		r.Put("/api/settings/retention", d.Settings.PutRetention)
 		r.Put("/api/settings/excludes", d.Settings.PutExcludes)
-		r.Put("/api/settings/cloudflare", d.Settings.PutCloudflare)
 		r.Put("/api/settings/container-monitor", d.Settings.PutContainerMonitor)
 		r.Put("/api/settings/komari", d.Settings.PutKomari)
 		r.Post("/api/settings/komari/test", d.Settings.TestKomari)
-		r.Post("/api/settings/cloudflare/test", d.Settings.TestCloudflare)
 		r.Put("/api/settings/github", d.Settings.GithubSaveConfig)
 		r.Post("/api/settings/github/push-project", d.Settings.GithubPushProject)
 

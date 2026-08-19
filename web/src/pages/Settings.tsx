@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, Send, RefreshCw, Github, UploadCloud, Cloud, Radar } from 'lucide-react';
+import { Save, Send, RefreshCw, Github, UploadCloud, Radar } from 'lucide-react';
 import { api } from '../services/api';
 import { notify } from '../stores';
 import { MultiSelect } from '../components/MultiSelect';
@@ -9,7 +9,7 @@ export function SettingsPage() {
   return (
     <div>
       <h1 className="page-title">设置</h1>
-      <p className="page-subtitle">账户、通知、容器更新、Cloudflare 与 GitHub 集成</p>
+      <p className="page-subtitle">账户、通知、容器更新与 GitHub 集成</p>
       <div className="tab-bar" role="tablist">
         {[
           ['account', '账户'],
@@ -17,7 +17,6 @@ export function SettingsPage() {
           ['container', '容器更新'],
           ['monitor', '容器监控'],
           ['backup', 'GitHub'],
-          ['cloudflare', 'Cloudflare'],
           ['komari', 'Komari'],
         ].map(([k, l]) => (
           <button
@@ -37,7 +36,6 @@ export function SettingsPage() {
       {tab === 'container' && <ContainerTab />}
       {tab === 'monitor' && <MonitorTab />}
       {tab === 'backup' && <GithubTab />}
-      {tab === 'cloudflare' && <CloudflareTab />}
       {tab === 'komari' && <KomariTab />}
     </div>
   );
@@ -326,101 +324,6 @@ function MonitorTab() {
       <button className="btn primary" onClick={save} disabled={saving}>
         <Save size={14} /> {saving ? '保存中…' : '保存'}
       </button>
-    </div>
-  );
-}
-
-function CloudflareTab() {
-  const [token, setToken] = useState('');
-  const [testing, setTesting] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [result, setResult] = useState<any>(null);
-
-  // Load the saved token (masked presence only) on mount.
-  useEffect(() => {
-    api.settings.all().then((r: any) => {
-      const cf = r?.cloudflare;
-      if (cf?.api_token) setToken(cf.api_token);
-    }).catch(() => {});
-  }, []);
-
-  const test = async () => {
-    setTesting(true);
-    setResult(null);
-    try {
-      const r: any = await api.settings.testCloudflare(token || undefined);
-      setResult(r);
-      notify(`连接成功：账号 ${r?.account_id?.slice(0, 8)}…，${r?.count ?? 0} 个 tunnel`, 'success');
-    } catch (e: any) {
-      setResult(null);
-      notify(e?.response?.data?.error || '测试失败', 'error');
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await api.settings.putCloudflare(token);
-      notify('已保存 Cloudflare 令牌', 'success');
-    } catch (e: any) {
-      notify(e?.response?.data?.error || '保存失败', 'error');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="card" style={{ padding: 18, maxWidth: 620 }}>
-      <div className="row" style={{ gap: 10, marginBottom: 8 }}>
-        <Cloud size={18} color="var(--primary)" />
-        <strong>Cloudflare（容器迁移用）</strong>
-      </div>
-      <p style={{ marginTop: 0, color: 'var(--text-secondary)' }}>
-        容器跨节点迁移时，面板用这个 API token 自动把容器的公网域名从源节点 tunnel 搬到目标节点 tunnel 并改 DNS，实现无缝切换。
-        需要 <code>Tunnel:Edit</code> 与 <code>DNS:Edit</code>（账号级）权限。
-      </p>
-
-      <div className="field">
-        <label>Cloudflare API Token</label>
-        <div className="row" style={{ gap: 8 }}>
-          <input
-            className="input"
-            style={{ flex: 1 }}
-            type="password"
-            value={token}
-            onChange={(e) => { setToken(e.target.value); setResult(null); }}
-            placeholder="Cloudflare 仪表盘 → My Profile → API Tokens → 创建 token"
-          />
-          <button className="btn sm" onClick={test} disabled={testing}>
-            {testing ? '测试中…' : '测试连接'}
-          </button>
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4 }}>
-          令牌明文存于本机面板数据库（与 GitHub/Telegram 令牌一致）。点「测试连接」会列出账号下的 tunnel 以验证权限。
-        </div>
-      </div>
-
-      {result && (
-        <div style={{ fontSize: 12, marginTop: 6, border: '1px solid var(--border-color)', borderRadius: 8, padding: 10 }}>
-          <div>账号 ID：<code className="mono">{result.account_id}</code></div>
-          <div style={{ marginTop: 6 }}>Tunnel（{result.count}）：</div>
-          <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
-            {(result.tunnels || []).map((t: any) => (
-              <li key={t.id} className="mono" style={{ fontSize: 11 }}>
-                {t.name || '(未命名)'} — <span style={{ color: 'var(--text-tertiary)' }}>{t.id}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <div className="row" style={{ gap: 10, marginTop: 14 }}>
-        <button className="btn primary" onClick={save} disabled={saving || !token}>
-          <Save size={14} /> {saving ? '保存中…' : '保存令牌'}
-        </button>
-      </div>
     </div>
   );
 }

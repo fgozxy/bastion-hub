@@ -309,15 +309,10 @@ func (s *Service) NewHubHandlers() agenthub.Handlers {
 				list = append(list, store.Container{
 					NodeID: nodeID, ContainerID: c.ID, Name: c.Name, Image: c.Image,
 					ImageID: c.ImageID, State: c.State, Status: c.Status, Created: c.Created,
-					UpdateType: c.UpdateType, HostPorts: c.HostPorts,
+					UpdateType: c.UpdateType,
 				})
 			}
 			_ = s.Store.ReplaceNodeContainers(context.Background(), nodeID, list)
-			// Cache the agent-reported Cloudflare Tunnel id (>= 1.9.0) so container
-			// migration knows which tunnel owns a node's domains. Cheap UPDATE, best-effort.
-			if d.TunnelID != "" {
-				_ = s.Store.SetNodeTunnelID(context.Background(), nodeID, d.TunnelID)
-			}
 			s.Browser.Broadcast(browserhub.NewOut("container.inventory", map[string]any{"node_id": nodeID}))
 		},
 	}

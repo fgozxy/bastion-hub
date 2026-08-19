@@ -142,8 +142,6 @@ export const api = {
     list: () => get('/api/nodes'),
     create: (name: string) => post('/api/nodes', { name }),
     rename: (id: string, name: string, ssh_port: string) => patch(`/api/nodes/${id}`, { name, ssh_port }),
-    setBaseDomain: (id: string, base_domain: string) => put(`/api/nodes/${id}/base-domain`, { base_domain }),
-    setIngressType: (id: string, ingress_type: string) => put(`/api/nodes/${id}/ingress-type`, { ingress_type }),
     firewallStatus: (node_id: string) => post('/api/nodes/firewall/status', { node_id }),
     firewallToggle: (node_id: string, action: 'enable' | 'disable') =>
       post('/api/nodes/firewall/toggle', { node_id, action }),
@@ -221,35 +219,6 @@ export const api = {
     preflight: (backup_ids: string[], node_ids: string[]) =>
       post('/api/restore/preflight', { backup_ids, node_ids }),
   },
-  migrate: {
-    // Migrate containers (by node_id+container_id) to one destination node:
-    // backup source → restore+recreate on dest (auto port remap) → re-point public
-    // domain (Cloudflare) → remove source. One job per container.
-    // rename_domains: rewrite each container's public hostname to
-    // <prefix>.<dest base domain> (a.a.com → a.b.com); domain_map carries the
-    // resolved per-(container, src_hostname) target hostname.
-    start: (
-      items: { node_id: string; container_id: string; name: string }[],
-      dest_node_id: string,
-      remove_source = true,
-      opts?: { rename_domains?: boolean; dest_base_domain?: string; domain_map?: { container_id: string; src_hostname: string; target_hostname: string }[] },
-    ) =>
-      post('/api/containers/migrate', {
-        items, dest_node_id, remove_source,
-        rename_domains: opts?.rename_domains ?? true,
-        dest_base_domain: opts?.dest_base_domain || '',
-        domain_map: opts?.domain_map || [],
-      }),
-    // Pre-migration domain plan: per container, what each current public hostname
-    // becomes on the dest node + availability (so conflicts can be resolved first).
-    domainPlan: (
-      items: { node_id: string; container_id: string; name: string }[],
-      dest_node_id: string,
-      dest_base_domain?: string,
-    ) => post('/api/containers/migrate/domain-plan', { items, dest_node_id, dest_base_domain: dest_base_domain || '' }),
-    // Persisted migration jobs (history + live).
-    jobs: () => get('/api/migrate/jobs'),
-  },
   targets: {
     list: () => get('/api/targets'),
     create: (t: any) => post('/api/targets', t),
@@ -287,8 +256,6 @@ export const api = {
       put('/api/settings/komari', { base_url, api_key, install_url }),
     testKomari: (base_url?: string, api_key?: string) =>
       post('/api/settings/komari/test', base_url || api_key ? { base_url, api_key } : {}),
-    putCloudflare: (api_token: string) => put('/api/settings/cloudflare', { api_token }),
-    testCloudflare: (api_token?: string) => post('/api/settings/cloudflare/test', api_token ? { api_token } : {}),
     putGithub: (token: string, owner: string, repo: string, branch: string, force: boolean) =>
       put('/api/settings/github', { token, owner, repo, branch, force }),
     githubPushProject: (token: string, owner: string, repo: string, branch: string, force: boolean) =>

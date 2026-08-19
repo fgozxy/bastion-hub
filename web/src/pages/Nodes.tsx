@@ -16,8 +16,6 @@ export function NodesPage() {
   const [editNode, setEditNode] = useState<any | null>(null);
   const [editName, setEditName] = useState('');
   const [editPort, setEditPort] = useState('22');
-  const [editBase, setEditBase] = useState('');
-  const [editIngress, setEditIngress] = useState('cftunnel');
   const [batchOpen, setBatchOpen] = useState(false);
   const [batchIds, setBatchIds] = useState<string[]>([]);
   const [batchRes, setBatchRes] = useState<any[] | null>(null);
@@ -90,13 +88,7 @@ export function NodesPage() {
     if (!editNode) return;
     try {
       await api.nodes.rename(editNode.id, editName, editPort || '22');
-      if ((editBase || '') !== (editNode.base_domain || '')) {
-        await api.nodes.setBaseDomain(editNode.id, editBase.trim());
-      }
-      if ((editIngress || 'cftunnel') !== (editNode.ingress_type || 'cftunnel')) {
-        await api.nodes.setIngressType(editNode.id, editIngress);
-      }
-      setNodes((p) => p.map((n) => (n.id === editNode.id ? { ...n, name: editName, ssh_port: editPort || '22', base_domain: editBase.trim(), ingress_type: editIngress } : n)));
+      setNodes((p) => p.map((n) => (n.id === editNode.id ? { ...n, name: editName, ssh_port: editPort || '22' } : n)));
       setEditNode(null);
       notify('已保存', 'success');
     } catch {
@@ -351,14 +343,6 @@ export function NodesPage() {
                   <span>Agent</span>
                   <span className="mono">{n.agent_version || '—'}</span>
                 </div>
-                <div className="kv-row">
-                  <span>{n.ingress_type === 'external' ? '入站' : '主域名'}</span>
-                  {n.ingress_type === 'external' ? (
-                    <span className="badge muted">外部线路</span>
-                  ) : (
-                    <span className="mono">{n.base_domain || <span style={{ color: 'var(--text-tertiary)' }}>未设置</span>}</span>
-                  )}
-                </div>
               </div>
 
               <div className="card-actions">
@@ -368,8 +352,6 @@ export function NodesPage() {
                     setEditNode(n);
                     setEditName(n.name);
                     setEditPort(n.ssh_port || '22');
-                    setEditBase(n.base_domain || '');
-                    setEditIngress(n.ingress_type || 'cftunnel');
                   }}
                 >
                   <Pencil size={13} /> 改名
@@ -488,34 +470,6 @@ export function NodesPage() {
               凭据扫描会用此端口校验 SSH 服务是否真实监听（读取本机 sshd banner）。
             </div>
           </div>
-          <div className="field" style={{ marginBottom: 0, marginTop: 14 }}>
-            <label>入站类型</label>
-            <select
-              className="select"
-              style={{ maxWidth: 220 }}
-              value={editIngress}
-              onChange={(e) => setEditIngress(e.target.value)}
-            >
-              <option value="cftunnel">CF 隧道（默认）</option>
-              <option value="external">外部线路（NPM/手动）</option>
-            </select>
-            <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4 }}>
-              {editIngress === 'external'
-                ? '外部线路节点：仅保留通用功能（备份/恢复/容器/防火墙），不参与域名跟随迁移，无需配主域名。'
-                : <>迁移到本节点时公网域名会改写成 <code>&lt;子域&gt;.&lt;主域名&gt;</code>（如 <code>a.a.com → a.example.com</code>），见下方「主域名」。</>}
-            </div>
-          </div>
-          {editIngress !== 'external' && (
-            <div className="field" style={{ marginBottom: 0, marginTop: 14 }}>
-              <label>主域名（迁移用）</label>
-              <input
-                className="input mono"
-                value={editBase}
-                onChange={(e) => setEditBase(e.target.value.trim())}
-                placeholder="如 example.com（留空则迁移时保留原域名）"
-              />
-            </div>
-          )}
         </Modal>
       )}
 

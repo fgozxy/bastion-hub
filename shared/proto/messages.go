@@ -305,21 +305,11 @@ type ContainerInfo struct {
 	Status     string `json:"status"`      // human string, e.g. "Up 2 minutes"
 	Created    int64  `json:"created"`     // unix seconds
 	UpdateType string `json:"update_type"` // latest | tag | unmanaged | pinned | build | local — how this container can be updated
-	// HostPorts are the container's published host ports (docker
-	// /containers/json Ports[].PublicPort), reported by agents >= 1.9.2. The
-	// master caches them so container-migration's domain pre-plan can match a
-	// container to its tunnel ingress rule (hostname→service port) before backup.
-	HostPorts []int `json:"host_ports,omitempty"`
 }
 
 // ContainersData is the periodic inventory report from an agent.
 type ContainersData struct {
 	Containers []ContainerInfo `json:"containers"`
-	// TunnelID is this node's Cloudflare Tunnel id, best-effort discovered by the
-	// agent from the local cloudflared container's token (agents >= 1.9.0). Empty
-	// when the node has no cloudflared or runs an older agent. The master caches it
-	// per node so container migration knows which tunnel owns a domain.
-	TunnelID string `json:"tunnel_id,omitempty"`
 }
 
 // ContainerScanItem is one container's update-readiness assessment.

@@ -3,7 +3,6 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -282,17 +281,9 @@ func (a *Agent) reportContainers() {
 			ID: c.ID, Name: containerName(c.Names), Image: img, ImageID: c.ImageID,
 			State: c.State, Status: c.Status, Created: c.Created,
 			UpdateType: classifyUpdate(c.Labels, img),
-			HostPorts:  uniquePorts(c.Ports),
 		})
 	}
-	// Best-effort: discover this node's Cloudflare Tunnel id from the local
-	// cloudflared container, so the master can move a migrated container's domain
-	// between tunnels. Cheap (one extra inspect) and cached; failure is silent.
-	tunnelID := ""
-	if cid := findCloudflared(raw); cid != "" {
-		tunnelID = detectTunnelID(dc, cid)
-	}
-	a.sendEnv(proto.MsgContainers, "", proto.ContainersData{Containers: out, TunnelID: tunnelID})
+	a.sendEnv(proto.MsgContainers, "", proto.ContainersData{Containers: out})
 }
 
 // containerListItem is the subset of docker's /containers/json entry we decode
@@ -306,144 +297,6 @@ type containerListItem struct {
 	Status  string            `json:"Status"`
 	Created int64             `json:"Created"`
 	Labels  map[string]string `json:"Labels"`
-	Ports   []dockerPort      `json:"Ports"`
-}
-
-// dockerPort is one entry of docker's /containers/json Ports array. Only
-// published bindings carry PublicPort (>0); we report those as host ports.
-type dockerPort struct {
-	IP          string `json:"IP,omitempty"`
-	PrivatePort int    `json:"PrivatePort,omitempty"`
-	PublicPort  int    `json:"PublicPort,omitempty"`
-	Type        string `json:"Type,omitempty"`
-}
-
-// uniquePorts returns the deduped, sorted set of published host ports (>0).
-func uniquePorts(ports []dockerPort) []int {
-	if len(ports) == 0 {
-		return nil
-	}
-	seen := map[int]bool{}
-	var out []int
-	for _, p := range ports {
-		if p.PublicPort > 0 && !seen[p.PublicPort] {
-			seen[p.PublicPort] = true
-			out = append(out, p.PublicPort)
-		}
-	}
-	for i := 1; i < len(out); i++ { // small slices — simple insertion sort
-		j := i
-		for j > 0 && out[j] < out[j-1] {
-			out[j], out[j-1] = out[j-1], out[j]
-			j--
-		}
-	}
-	return out
-}
-
-// findCloudflared returns the id of a running cloudflared container in the
-// /containers/json listing (matched by image name, then by container name), or "".
-func findCloudflared(raw []containerListItem) string {
-	for _, c := range raw {
-		if strings.Contains(c.Image, "cloudflared") {
-			return c.ID
-		}
-	}
-	for _, c := range raw {
-		for _, nm := range c.Names {
-			if strings.Contains(strings.TrimPrefix(nm, "/"), "cloudflared") {
-				return c.ID
-			}
-		}
-	}
-	return ""
-}
-
-// tunnelIDCache memoizes the decoded tunnel id per process so we don't re-inspect
-// + re-decode the (constant) cloudflared token on every 30s inventory report.
-var (
-	tunnelIDMu    sync.Mutex
-	tunnelIDCache string
-)
-
-// detectTunnelID inspects the cloudflared container, extracts its tunnel token
-// (from Config.Cmd "--token <jwt>" or Config.Env "TUNNEL_TOKEN=<jwt>"), and
-// decodes the base64url JSON payload {"a","t","s"} to return the tunnel id ("t").
-// Returns "" if the container can't be inspected or the token doesn't decode.
-// The token is a tunnel credential; we extract only the id locally and never
-// transmit the token itself.
-func detectTunnelID(dc *dockerClient, containerID string) string {
-	tunnelIDMu.Lock()
-	cached := tunnelIDCache
-	tunnelIDMu.Unlock()
-	if cached != "" {
-		return cached
-	}
-	token := cloudflaredToken(dc, containerID)
-	id := decodeTunnelToken(token)
-	if id != "" {
-		tunnelIDMu.Lock()
-		tunnelIDCache = id
-		tunnelIDMu.Unlock()
-	}
-	return id
-}
-
-// cloudflaredToken reads the cloudflared container's run token from its Config.
-func cloudflaredToken(dc *dockerClient, containerID string) string {
-	resp, err := dc.req(http.MethodGet, "/containers/"+containerID+"/json", nil)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	var ins struct {
-		Config struct {
-			Cmd []string `json:"Cmd"`
-			Env []string `json:"Env"`
-		} `json:"Config"`
-	}
-	if json.NewDecoder(resp.Body).Decode(&ins) != nil {
-		return ""
-	}
-	// `cloudflared tunnel run --token <JWT>` — the token follows --token.
-	for i, a := range ins.Config.Cmd {
-		if a == "--token" && i+1 < len(ins.Config.Cmd) {
-			return ins.Config.Cmd[i+1]
-		}
-		if strings.HasPrefix(a, "--token=") {
-			return strings.TrimPrefix(a, "--token=")
-		}
-	}
-	for _, e := range ins.Config.Env {
-		if strings.HasPrefix(e, "TUNNEL_TOKEN=") {
-			return strings.TrimPrefix(e, "TUNNEL_TOKEN=")
-		}
-	}
-	return ""
-}
-
-// decodeTunnelToken base64url-decodes a cloudflared tunnel token and returns the
-// "t" (tunnel id) field. The token payload is JSON {"a":account,"t":tunnel,"s":...}.
-func decodeTunnelToken(token string) string {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return ""
-	}
-	dec, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil {
-		// some tokens are standard base64 (with padding); try that as a fallback
-		dec, err = base64.StdEncoding.DecodeString(token)
-		if err != nil {
-			return ""
-		}
-	}
-	var p struct {
-		T string `json:"t"`
-	}
-	if json.Unmarshal(dec, &p) != nil {
-		return ""
-	}
-	return p.T
 }
 
 // handleContainerScan assesses every container's update readiness: update_type,
@@ -606,6 +459,7 @@ func scanContainers(dc *dockerClient, registryDigest func(string) (string, error
 //     usable semver tags exist → fall back to same-tag digest compare (legacy).
 //  3. Else if configured tag is already a semver and it is the highest → 0.
 //  4. Floating tag whose digest matches the highest semver → 0 (ignore latest rebuilds).
+//
 // listTagsFn is the registry tag lister used by scans. Overridden in tests so
 // unit tests do not hit the network and still exercise digest-compare paths.
 var listTagsFn = registryListTags

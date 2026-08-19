@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"nodepanel/shared/proto"
@@ -47,7 +46,7 @@ func (s *Store) ReplaceNodeContainers(ctx context.Context, nodeID string, list [
 		_ = tx.Rollback()
 		return err
 	}
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO containers(id,node_id,container_id,name,image,image_id,state,status,created,updated,update_type,host_ports) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO containers(id,node_id,container_id,name,image,image_id,state,status,created,updated,update_type) VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
@@ -59,8 +58,7 @@ func (s *Store) ReplaceNodeContainers(ctx context.Context, nodeID string, list [
 		if len(cid) > 12 {
 			cid = cid[:12]
 		}
-		portsJSON, _ := json.Marshal(c.HostPorts) // nil/empty → "null"/"[]"; decode tolerates both
-		if _, err := stmt.ExecContext(ctx, nodeID+"/"+cid, nodeID, c.ContainerID, c.Name, c.Image, c.ImageID, c.State, c.Status, c.Created, now, c.UpdateType, string(portsJSON)); err != nil {
+		if _, err := stmt.ExecContext(ctx, nodeID+"/"+cid, nodeID, c.ContainerID, c.Name, c.Image, c.ImageID, c.State, c.Status, c.Created, now, c.UpdateType); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -99,8 +97,7 @@ func (s *Store) ListContainers(ctx context.Context) ([]Container, error) {
 		       COALESCE(c.image,''), COALESCE(c.image_id,''), COALESCE(c.state,''),
 		       COALESCE(c.status,''), COALESCE(c.created,0), COALESCE(c.updated,0),
 		       COALESCE(c.update_type,''),
-		       COALESCE(sc.has_update,-1), COALESCE(sc.note,''), COALESCE(sc.scanned_at,0),
-		       COALESCE(c.host_ports,'')
+		       COALESCE(sc.has_update,-1), COALESCE(sc.note,''), COALESCE(sc.scanned_at,0)
 		FROM containers c
 		JOIN nodes owner ON owner.id=c.node_id
 		LEFT JOIN container_names n ON n.node_id=c.node_id AND n.name=c.name
@@ -113,50 +110,12 @@ func (s *Store) ListContainers(ctx context.Context) ([]Container, error) {
 	var out []Container
 	for rows.Next() {
 		var c Container
-		var portsJSON string
-		if err := rows.Scan(&c.NodeID, &c.ContainerID, &c.Name, &c.DisplayName, &c.Image, &c.ImageID, &c.State, &c.Status, &c.Created, &c.Updated, &c.UpdateType, &c.HasUpdate, &c.Note, &c.ScannedAt, &portsJSON); err != nil {
+		if err := rows.Scan(&c.NodeID, &c.ContainerID, &c.Name, &c.DisplayName, &c.Image, &c.ImageID, &c.State, &c.Status, &c.Created, &c.Updated, &c.UpdateType, &c.HasUpdate, &c.Note, &c.ScannedAt); err != nil {
 			return nil, err
 		}
-		c.HostPorts = decodePorts(portsJSON)
 		out = append(out, c)
 	}
 	return out, rows.Err()
-}
-
-// ContainersByNode returns the stored inventory for one node (with host ports),
-// used by container-migration's domain pre-plan. Cheaper than ListContainers.
-func (s *Store) ContainersByNode(ctx context.Context, nodeID string) ([]Container, error) {
-	rows, err := s.DB.QueryContext(ctx,
-		`SELECT container_id, COALESCE(name,''), COALESCE(host_ports,'')
-		 FROM containers WHERE node_id=? ORDER BY name`, nodeID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Container
-	for rows.Next() {
-		var c Container
-		var portsJSON string
-		if err := rows.Scan(&c.ContainerID, &c.Name, &portsJSON); err != nil {
-			return nil, err
-		}
-		c.NodeID = nodeID
-		c.HostPorts = decodePorts(portsJSON)
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
-
-// decodePorts parses a stored host_ports JSON column ([]int, "null", or "").
-func decodePorts(s string) []int {
-	if s == "" || s == "null" {
-		return nil
-	}
-	var p []int
-	if json.Unmarshal([]byte(s), &p) == nil {
-		return p
-	}
-	return nil
 }
 
 // UpdateContainerScan atomically replaces one node's scan cache. Deleting first

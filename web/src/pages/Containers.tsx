@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, RotateCw, Play, Square, Pencil, CheckCheck, Box, ArrowUpCircle, Zap, Activity, Trash2, ArrowRightLeft, X, Search, MoreVertical } from 'lucide-react';
+import { RefreshCw, RotateCw, Play, Square, Pencil, CheckCheck, Box, ArrowUpCircle, Zap, Activity, Trash2, X, Search, MoreVertical } from 'lucide-react';
 import { api, normalizeContainerOperation, type NormalizedContainerOperation } from '../services/api';
 import { useWs } from '../hooks/useWs';
 import { notify } from '../stores';
-import { Empty, Modal, ActionSheet, type ActionSheetItem } from '../components/ui';
-import { NodeSelect } from '../components/NodePicker';
+import { Empty, ActionSheet, type ActionSheetItem } from '../components/ui';
 import { relTime } from '../lib/utils';
 
 type Container = {
@@ -50,37 +49,6 @@ const SCAN_FRESH_SECONDS = 24 * 60 * 60;
 
 const key = (c: Container) => `${c.node_id}::${c.container_id}`;
 
-type MigrateJob = {
-  id: string;
-  container: string;
-  image: string;
-  source_node: string;
-  target_node: string;
-  status: 'running' | 'ok' | 'failed' | 'partial';
-  stage?: string;
-  detail?: string;
-  error?: string;
-  domains?: string;
-  ports_remapped?: string;
-  domain_moved: boolean;
-  source_removed: boolean;
-  bytes_total: number;
-  bytes_done: number;
-  percent: number;
-  started_at: number;
-  finished_at?: number;
-  source_node_name?: string;
-  target_node_name?: string;
-};
-
-const stageLabel = (s?: string) =>
-  s === 'backup' ? '备份源容器' :
-  s === 'preflight' ? '预检目标' :
-  s === 'restore' ? '恢复并重建' :
-  s === 'domain' ? '切换域名' :
-  s === 'cleanup' ? '清理源容器' :
-  s ? '处理中' : '';
-
 export function ContainersPage() {
   const [containers, setContainers] = useState<Container[]>([]);
   const [nodes, setNodes] = useState<any[]>([]);
@@ -97,22 +65,6 @@ export function ContainersPage() {
     onYes: () => void;
   } | null>(null);
 
-  // migration UI state
-  const [migrateItems, setMigrateItems] = useState<Container[]>([]);
-  const [migrateOpen, setMigrateOpen] = useState(false);
-  const [migrateDest, setMigrateDest] = useState<string[]>([]);
-  const [removeSource, setRemoveSource] = useState(true);
-  const [migrating, setMigrating] = useState(false);
-  const [migLive, setMigLive] = useState<Record<string, MigrateJob>>({});
-  const [migHistory, setMigHistory] = useState<MigrateJob[]>([]);
-  // domain rename (pre-plan) state
-  const [migRename, setMigRename] = useState(true);
-  const [migPlan, setMigPlan] = useState<any[] | null>(null);
-  const [migDestHosts, setMigDestHosts] = useState<string[]>([]);
-  const [migBase, setMigBase] = useState('');
-  const [migBaseSet, setMigBaseSet] = useState(false);
-  const [migTargets, setMigTargets] = useState<Record<string, string>>({}); // key `${container_id}${src}` -> target
-  const [migPlanning, setMigPlanning] = useState(false);
   const [sheet, setSheet] = useState<Container | null>(null);
 
   const load = () => {
@@ -121,23 +73,9 @@ export function ContainersPage() {
   };
   useEffect(() => {
     load();
-    api.migrate.jobs().then((r: any) => setMigHistory(Array.isArray(r) ? r : []));
   }, []);
 
   useWs('container.inventory', () => load());
-
-  // streaming migration progress + terminal state (keyed by job id) + history refresh
-  useWs('migrate.progress', (d: any) => {
-    if (!d?.id) return;
-    setMigLive((p) => ({ ...p, [d.id]: { ...(p[d.id] || {}), ...d } as MigrateJob }));
-  });
-  useWs('migrate.update', (d: any) => {
-    if (!d?.id) return;
-    setMigLive((p) => ({ ...p, [d.id]: d as MigrateJob }));
-  });
-  useWs('migrate.jobs', () => {
-    api.migrate.jobs().then((r: any) => setMigHistory(Array.isArray(r) ? r : []));
-  });
 
   const nodeName = (id: string) => nodes.find((n) => n.id === id)?.name || id.slice(0, 8);
   const nodeOnline = (id: string) => {
@@ -310,124 +248,6 @@ export function ContainersPage() {
     });
   };
 
-  // open the migration modal for a specific set of containers
-  const openMigrate = (items: Container[]) => {
-    if (items.length === 0) return notify('请先选择要迁移的容器', 'error');
-    setMigrateItems(items);
-    setMigrateDest([]);
-    setRemoveSource(true);
-    setMigRename(true);
-    setMigPlan(null);
-    setMigDestHosts([]);
-    setMigBase('');
-    setMigBaseSet(false);
-    setMigTargets({});
-    setMigPlanning(false);
-    setMigrateOpen(true);
-  };
-
-  // Fetch the domain rename pre-plan whenever a destination node is chosen.
-  const fetchPlan = async (destId: string, baseOverride?: string) => {
-    setMigPlanning(true);
-    setMigPlan(null);
-    setMigTargets({});
-    try {
-      const payload = migrateItems.map((c) => ({ node_id: c.node_id, container_id: c.container_id, name: c.name }));
-      const r: any = await api.migrate.domainPlan(payload, destId, baseOverride);
-      setMigPlan(Array.isArray(r?.plan) ? r.plan : []);
-      setMigDestHosts(Array.isArray(r?.dest_hostnames) ? r.dest_hostnames.map((h: string) => h.toLowerCase()) : []);
-      setMigBase(r?.dest_base_domain || '');
-      setMigBaseSet(!!r?.dest_base_domain_set);
-      // seed editable targets with computed defaults (so the user can tweak any)
-      const seed: Record<string, string> = {};
-      for (const c of r?.plan || []) for (const it of c.items || []) if (it.rename) seed[`${c.container_id}${it.src_hostname}`] = it.target_hostname;
-      setMigTargets(seed);
-    } catch (e: any) {
-      setMigPlan([]);
-      notify(e?.response?.data?.error || '域名预检失败（不影响迁移，将保留原域名）', 'error');
-    } finally {
-      setMigPlanning(false);
-    }
-  };
-
-  // re-run plan when dest / rename toggle changes. migBase is seeded from the
-  // dest node's configured base domain (not a dep — editing it doesn't auto-refetch;
-  // a "重新预检" button reapplies it).
-  useEffect(() => {
-    if (!migrateOpen || migrateDest.length === 0) return;
-    const dn = nodes.find((n) => n.id === migrateDest[0]);
-    const base = dn?.base_domain || '';
-    setMigBase(base);
-    if (dn?.ingress_type === 'external') {
-      // External-line (NPM) dest: domain can't follow — force off the rename
-      // toggle and skip the CF domain pre-plan. Data still migrates; the domain
-      // stays on the source (source container kept to avoid stranding it).
-      setMigRename(false);
-      setMigPlan(null);
-      return;
-    }
-    if (migRename) fetchPlan(migrateDest[0], base);
-    else setMigPlan(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [migrateDest, migRename, migrateOpen]);
-
-  // External-line (NPM) destination: domain-follow migration doesn't apply.
-  const destExt =
-    migrateDest.length > 0 && nodes.find((n) => n.id === migrateDest[0])?.ingress_type === 'external';
-
-  // a target conflicts if the dest tunnel already has it or another batch item uses it
-  const targetConflict = (containerId: string, src: string, target: string): boolean => {
-    const t = (target || '').trim().toLowerCase();
-    if (!t) return true;
-    if (migDestHosts.includes(t)) return true;
-    for (const k of Object.keys(migTargets)) {
-      if (k === `${containerId}${src}`) continue;
-      if ((migTargets[k] || '').trim().toLowerCase() === t) return true;
-    }
-    return false;
-  };
-  const hasUnresolvedConflict = (migPlan || []).some((c: any) =>
-    (c.items || []).some((it: any) => it.rename && targetConflict(c.container_id, it.src_hostname, migTargets[`${c.container_id}${it.src_hostname}`] || it.target_hostname)),
-  );
-
-  const doMigrate = async () => {
-    if (migrateDest.length === 0) return notify('请选择目标节点', 'error');
-    if (migRename && hasUnresolvedConflict) return notify('存在域名冲突，请先为冲突项填入可用的子域名', 'error');
-    const payload = migrateItems.map((c) => ({ node_id: c.node_id, container_id: c.container_id, name: c.name }));
-    // build domain_map from editable targets (only rename items)
-    const domainMap: { container_id: string; src_hostname: string; target_hostname: string }[] = [];
-    if (migRename) {
-      for (const c of migPlan || []) {
-        for (const it of c.items || []) {
-          if (!it.rename) continue;
-          const target = (migTargets[`${c.container_id}${it.src_hostname}`] || it.target_hostname || it.src_hostname).trim();
-          domainMap.push({ container_id: c.container_id, src_hostname: it.src_hostname, target_hostname: target });
-        }
-      }
-    }
-    setMigrating(true);
-    try {
-      const r: any = await api.migrate.start(payload, migrateDest[0], removeSource, {
-        rename_domains: migRename,
-        dest_base_domain: migBase,
-        domain_map: domainMap,
-      });
-      notify(`已下发 ${r?.started ?? payload.length} 个迁移任务（实时进度见下方）`, 'success');
-      setMigrateOpen(false);
-      setSelected(new Set());
-    } catch (e: any) {
-      notify(e?.response?.data?.error || '下发迁移失败', 'error');
-    } finally {
-      setMigrating(false);
-    }
-  };
-  const migStatusBadge = (st: string) =>
-    st === 'ok' ? <span className="badge success">完成</span> :
-    st === 'partial' ? <span className="badge warning">部分完成</span> :
-    st === 'failed' ? <span className="badge error">失败</span> :
-    <span className="badge warning">进行中</span>;
-  const migLiveJobs = Object.values(migLive).sort((a, b) => b.started_at - a.started_at);
-
   const upgrade = (c: Container) => {
     const ni = window.prompt(
       `换镜像 / 升级「${c.name}」\n输入新的 image:tag(将改写节点 compose 并重建,原文件备份为 .bak):`,
@@ -550,7 +370,6 @@ export function ContainersPage() {
             <button className="btn sm" disabled={busy || selectedItems.length === 0} onClick={() => act('restart')}><RotateCw size={13} /> 重启</button>
             <button className="btn sm" disabled={busy || selectedItems.length === 0} onClick={() => act('start')}><Play size={13} /> 启动</button>
             <button className="btn sm" disabled={busy || selectedItems.length === 0} onClick={() => act('stop')}><Square size={13} /> 停止</button>
-            <button className="btn sm" disabled={busy || selectedItems.length === 0} onClick={() => openMigrate(selectedItems)} title="把当前视图选中的容器无损迁移到另一节点（数据+端口+域名自动跟随）"><ArrowRightLeft size={13} /> 迁移选中</button>
             <button className="btn sm" disabled={busy || selectedItems.length === 0} onClick={deleteSelected} title="删除当前视图选中的容器（docker rm -f，不可恢复）"><Trash2 size={13} /> 删除选中</button>
           </div>
         </div>
@@ -638,9 +457,6 @@ export function ContainersPage() {
                       <button className="icon-btn" title="设置显示名" onClick={() => rename(c)}>
                         <Pencil size={14} />
                       </button>
-                      <button className="icon-btn" title="迁移到其他节点（无损，域名自动跟随）" disabled={busy} onClick={() => openMigrate([c])}>
-                        <ArrowRightLeft size={14} />
-                      </button>
                       <button className="icon-btn" title="删除容器（docker rm -f，不可恢复）" onClick={() => removeContainer(c)}>
                         <Trash2 size={14} />
                       </button>
@@ -717,13 +533,6 @@ export function ContainersPage() {
             onClick: () => rename(sheet),
           },
           {
-            key: 'migrate',
-            label: '迁移到其他节点',
-            icon: <ArrowRightLeft size={18} />,
-            disabled: busy,
-            onClick: () => openMigrate([sheet]),
-          },
-          {
             key: 'delete',
             label: '删除容器',
             icon: <Trash2 size={18} />,
@@ -768,221 +577,6 @@ export function ContainersPage() {
           </div>
         )}
       </ActionSheet>
-
-      {migLiveJobs.length > 0 && (
-        <div className="card" style={{ marginTop: 16 }}>
-          <div className="spread" style={{ padding: '12px 14px' }}>
-            <strong>迁移进度</strong>
-            <button className="btn sm ghost" onClick={() => setMigLive({})}>
-              <X size={13} /> 清空记录
-            </button>
-          </div>
-          <div className="scroll-x"><table className="tbl">
-            <tbody>
-              {migLiveJobs.map((j) => (
-                <tr key={j.id}>
-                  <td style={{ width: 96 }}>{migStatusBadge(j.status)}</td>
-                  <td>{j.container}</td>
-                  <td style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                    {j.source_node_name || nodeName(j.source_node)} → {j.target_node_name || nodeName(j.target_node)}
-                  </td>
-                  <td style={{ minWidth: 220 }}>
-                    {j.status === 'running' && (
-                      <div>
-                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 3 }}>
-                          {stageLabel(j.stage)}
-                          {j.stage === 'restore' && j.bytes_total > 0 && ` · ${j.bytes_done} / ${j.bytes_total}`}
-                        </div>
-                        {j.stage === 'restore' && (
-                          <div style={{ height: 5, background: 'var(--border-color)', borderRadius: 3, overflow: 'hidden' }}>
-                            <div style={{ width: `${j.percent || 0}%`, height: '100%', background: 'var(--primary)', transition: 'width .3s' }} />
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    {j.status !== 'running' && (
-                      <div style={{ fontSize: 12 }}>
-                        {j.detail}
-                        {j.error && <span style={{ color: 'var(--danger, #d33)' }}>{j.detail ? ' · ' : ''}{j.error}</span>}
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table></div>
-        </div>
-      )}
-
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="spread" style={{ padding: '12px 14px' }}>
-          <strong>迁移历史</strong>
-          <button className="btn sm ghost" onClick={() => api.migrate.jobs().then((r: any) => setMigHistory(Array.isArray(r) ? r : []))}>
-            <RefreshCw size={13} /> 刷新
-          </button>
-        </div>
-        {migHistory.length === 0 ? (
-          <Empty text="暂无迁移历史。" />
-        ) : (
-          <div className="scroll-x"><table className="tbl">
-            <thead>
-              <tr>
-                <th>状态</th><th>容器</th><th>源 → 目标</th><th>结果</th><th>时间</th>
-              </tr>
-            </thead>
-            <tbody>
-              {migHistory.map((j) => (
-                <tr key={j.id}>
-                  <td>{migStatusBadge(j.status)}</td>
-                  <td>{j.container}</td>
-                  <td style={{ fontSize: 12 }}>
-                    {j.source_node_name || j.source_node?.slice(0, 8)} → {j.target_node_name || j.target_node?.slice(0, 8)}
-                  </td>
-                  <td style={{ fontSize: 12 }}>
-                    {j.detail}
-                    {j.error ? <span style={{ color: 'var(--danger, #d33)' }}> {j.error}</span> : ''}
-                  </td>
-                  <td style={{ color: 'var(--text-tertiary)' }} title={new Date(j.started_at * 1000).toLocaleString()}>{relTime(j.started_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table></div>
-        )}
-      </div>
-
-      {migrateOpen && (
-        <Modal
-          title="无损迁移容器"
-          wide
-          onClose={() => setMigrateOpen(false)}
-          footer={
-            <>
-              <button className="btn" onClick={() => setMigrateOpen(false)}>取消</button>
-              <button className="btn primary" onClick={doMigrate} disabled={migrating || migrateDest.length === 0 || (migRename && hasUnresolvedConflict)}>
-                <ArrowRightLeft size={14} /> {migrating ? '下发中…' : `迁移 ${migrateItems.length} 个到目标节点`}
-              </button>
-            </>
-          }
-        >
-          <p style={{ marginTop: 0 }}>
-            将把以下 <strong>{migrateItems.length}</strong> 个容器无损迁移到目标节点：备份源容器 → 在目标重建（<strong>端口冲突自动改用空闲端口</strong>）→ 公网域名自动切到目标节点 → 删除源容器。
-          </p>
-          <div style={{ maxHeight: 160, overflow: 'auto', border: '1px solid var(--border-color)', borderRadius: 8, marginBottom: 14 }}>
-            {migrateItems.map((c, i) => (
-              <div key={i} className="row" style={{ padding: '7px 12px', borderBottom: '1px solid var(--border-color)', gap: 8 }}>
-                <Box size={13} color="var(--text-tertiary)" />
-                <strong style={{ fontSize: 13 }}>{c.display_name || c.name}</strong>
-                <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>@ {nodeName(c.node_id)}</span>
-              </div>
-            ))}
-          </div>
-
-          <div className="field">
-            <label>目标节点（在线，需 agent ≥ 1.9.0）</label>
-            <NodeSelect
-              nodes={nodes.filter((n) => !migrateItems.some((c) => c.node_id === n.id))}
-              value={migrateDest}
-              onChange={setMigrateDest}
-              onlineOnly
-              placeholder="选择目标节点…"
-            />
-          </div>
-
-          {destExt && (
-            <div style={{ fontSize: 13, lineHeight: 1.6, padding: '8px 12px', marginBottom: 10, borderRadius: 8, border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>
-              <strong>⚠️ 目标节点为外部线路（NPM）</strong>：容器数据会正常迁移，但<strong>公网域名不会跟随</strong>——保留在源节点，源容器不删除以免域名断开。域名跟随仅支持 CF 隧道节点。
-            </div>
-          )}
-
-          <label className="row" style={{ gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', marginTop: 8 }}>
-            <input type="checkbox" checked={removeSource} onChange={(e) => setRemoveSource(e.target.checked)} />
-            迁移完成后删除源容器（保留备份可回滚）
-          </label>
-
-          <label className="row" style={{ gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', marginTop: 10 }}>
-            <input type="checkbox" checked={migRename} onChange={(e) => setMigRename(e.target.checked)} disabled={migrateDest.length === 0 || destExt} />
-            域名改用目标节点主域名（如 <code>a.a.com → a.{migBase || 'b.com'}</code>）
-          </label>
-
-          {migRename && migrateDest.length > 0 && (
-            <>
-              <div className="field" style={{ marginTop: 10, marginBottom: 6 }}>
-                <label>目标主域名（可覆盖；留空则保留原域名）</label>
-                <div className="row" style={{ gap: 8 }}>
-                  <input
-                    className="input mono"
-                    style={{ flex: 1 }}
-                    value={migBase}
-                    onChange={(e) => setMigBase(e.target.value.trim())}
-                    placeholder="如 example.com"
-                  />
-                  <button className="btn sm" onClick={() => fetchPlan(migrateDest[0], migBase)} disabled={migPlanning}>
-                    {migPlanning ? '预检中…' : '重新预检'}
-                  </button>
-                </div>
-              </div>
-
-              {migPlanning && <div style={{ fontSize: 12, color: 'var(--text-tertiary)', padding: '6px 0' }}>正在预检域名…</div>}
-
-              {!migPlanning && migPlan && (
-                <div style={{ marginTop: 6 }}>
-                  {migPlan.length === 0 && (
-                    <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>未取到域名预检结果（可能未配置 Cloudflare 或源 agent ＜ 1.9.2）；将保留原域名。</div>
-                  )}
-                  {migPlan.map((c: any, ci: number) => (
-                    <div key={ci} style={{ border: '1px solid var(--border-color)', borderRadius: 8, padding: 10, marginBottom: 8 }}>
-                      <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 6 }}>
-                        <Box size={13} color="var(--text-tertiary)" />
-                        <strong style={{ fontSize: 13 }}>{c.container_name || c.container_id}</strong>
-                      </div>
-                      {c.error ? (
-                        <div className="badge warning" style={{ display: 'block', padding: 8 }}>{c.error}</div>
-                      ) : (c.items || []).length === 0 ? (
-                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>该容器无经 tunnel 暴露的公网域名。</div>
-                      ) : (
-                        (c.items || []).map((it: any, ii: number) => {
-                          const key = `${c.container_id}${it.src_hostname}`;
-                          const cur = migTargets[key] ?? it.target_hostname;
-                          const conflict = it.rename && targetConflict(c.container_id, it.src_hostname, cur);
-                          return (
-                            <div key={ii} className="row" style={{ gap: 8, alignItems: 'center', padding: '5px 0', flexWrap: 'wrap' }}>
-                              <code className="mono" style={{ fontSize: 12 }}>{it.src_hostname}</code>
-                              <span style={{ color: 'var(--text-tertiary)' }}>→</span>
-                              {it.rename ? (
-                                <>
-                                  <input
-                                    className="input mono"
-                                    style={{ flex: 1, minWidth: 200, fontSize: 12, borderColor: conflict ? 'var(--danger)' : undefined }}
-                                    value={cur}
-                                    onChange={(e) => setMigTargets((p) => ({ ...p, [key]: e.target.value }))}
-                                  />
-                                  {conflict ? (
-                                    <span className="badge error">冲突：已被占用</span>
-                                  ) : (
-                                    <span className="badge success">可用</span>
-                                  )}
-                                </>
-                              ) : (
-                                <span className="badge muted">保留原域名{it.conflict_reason ? '（' + it.conflict_reason + '）' : ''}</span>
-                              )}
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-
-          <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 12, lineHeight: 1.7 }}>
-            · 需在「设置 → Cloudflare」配置 API token 才能自动切换域名；未配置时仅迁移容器/数据并保留源容器。<br />
-            · 域名预检/改名需源节点 agent ≥ 1.9.2（上报容器端口）；旧版本自动降级为保留原域名。<br />
-            · 端口冲突不阻断迁移：自动选空闲端口，并把域名指过去，对外无感。
-          </div>
-        </Modal>
-      )}
 
       {confirm && (
         <ConfirmDialog
