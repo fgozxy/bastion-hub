@@ -287,7 +287,6 @@ export const api = {
       put('/api/settings/komari', { base_url, api_key, install_url }),
     testKomari: (base_url?: string, api_key?: string) =>
       post('/api/settings/komari/test', base_url || api_key ? { base_url, api_key } : {}),
-    putDomain: (public_url: string) => put('/api/settings/domain', { public_url }),
     putCloudflare: (api_token: string) => put('/api/settings/cloudflare', { api_token }),
     testCloudflare: (api_token?: string) => post('/api/settings/cloudflare/test', api_token ? { api_token } : {}),
     putGithub: (token: string, owner: string, repo: string, branch: string, force: boolean) =>
@@ -320,54 +319,5 @@ export const api = {
     },
     setName: (node_id: string, name: string, display_name: string) =>
       put('/api/containers/name', { node_id, name, display_name }),
-  },
-  domains: {
-    list: () => get('/api/domains'),
-    addRule: (tunnel_id: string, hostname: string, service: string, path = '') =>
-      post('/api/domains/rule', { tunnel_id, hostname, service, path }),
-    editRule: (tunnel_id: string, orig_hostname: string, hostname: string, service: string, orig_path = '', path = '') =>
-      put('/api/domains/rule', { tunnel_id, orig_hostname, orig_path, hostname, path, service }),
-    deleteRule: (tunnel_id: string, hostname: string, path = '') =>
-      del(`/api/domains/rule?tunnel_id=${encodeURIComponent(tunnel_id)}&hostname=${encodeURIComponent(hostname)}&path=${encodeURIComponent(path)}`),
-    move: (hostname: string, from_tunnel: string, to_tunnel: string, service: string) =>
-      post('/api/domains/move', { hostname, from_tunnel, to_tunnel, service }),
-  },
-  tunnels: {
-    list: () => get('/api/tunnels'),
-    create: (node_id: string, name: string) => post('/api/tunnels', { node_id, name }),
-    start: (id: string) => post(`/api/tunnels/${encodeURIComponent(id)}/start`),
-    stop: (id: string) => post(`/api/tunnels/${encodeURIComponent(id)}/stop`),
-    rename: (id: string, name: string) => patch(`/api/tunnels/${encodeURIComponent(id)}`, { name }),
-    del: (id: string) => del(`/api/tunnels/${encodeURIComponent(id)}`),
-  },
-  dns: {
-    // Cloudflare DNS records — full zone/record management (any type).
-    zones: () => get('/api/dns/zones'),
-    records: (zone_id: string) => get('/api/dns/records', { zone_id }),
-    create: (b: {
-      zone_id: string;
-      type: string;
-      name: string;
-      content: string;
-      ttl: number;
-      proxied: boolean;
-      priority?: number | null;
-      comment?: string;
-    }) => post('/api/dns/records', b),
-    update: (
-      id: string,
-      zone_id: string,
-      b: {
-        type: string;
-        name: string;
-        content: string;
-        ttl: number;
-        proxied: boolean;
-        priority?: number | null;
-        comment?: string;
-      },
-    ) => put(`/api/dns/records/${encodeURIComponent(id)}?zone_id=${encodeURIComponent(zone_id)}`, b),
-    del: (id: string, zone_id: string) =>
-      del(`/api/dns/records/${encodeURIComponent(id)}?zone_id=${encodeURIComponent(zone_id)}`),
   },
 };

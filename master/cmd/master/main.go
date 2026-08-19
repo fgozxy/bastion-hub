@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"os"
 	"time"
 
 	"nodepanel/master/internal/agentapi"
@@ -18,18 +19,16 @@ import (
 	"nodepanel/master/internal/container"
 	"nodepanel/master/internal/credentials"
 	"nodepanel/master/internal/dashboard"
-	"nodepanel/master/internal/dns"
-	"nodepanel/master/internal/domains"
 	"nodepanel/master/internal/geoip"
 	"nodepanel/master/internal/health"
-	"nodepanel/master/internal/nodes"
+	"nodepanel/master/internal/mesh"
 	"nodepanel/master/internal/monitor"
+	"nodepanel/master/internal/nodes"
 	"nodepanel/master/internal/scheduler"
 	"nodepanel/master/internal/server"
 	"nodepanel/master/internal/settings"
 	"nodepanel/master/internal/store"
 	"nodepanel/master/internal/telegram"
-	"nodepanel/master/internal/tunnels"
 )
 
 func main() {
@@ -94,6 +93,15 @@ func main() {
 	// until nodes are enrolled via the 健康监控 panel.
 	healthSvc := health.New(st, hub, nodesSvc, tg)
 	healthSvc.Start()
+	meshSvc := &mesh.Service{Store: st, Hub: hub}
+	// Auto mesh provisioning (5-min sync of mesh keys + the port-22022 IP
+	// allowlist firewall across online nodes). Toggle off with
+	// NODEPANEL_MESH_AUTO=0 to stop the panel from (re)applying the SSH
+	// source-IP restriction on managed nodes; the manual /api/mesh/* endpoints
+	// remain available either way.
+	if os.Getenv("NODEPANEL_MESH_AUTO") != "0" {
+		meshSvc.StartAutoProvision(context.Background())
+	}
 
 	deps := &server.Deps{
 		Cfg:         cfg,
@@ -102,13 +110,11 @@ func main() {
 		AgentAPI:    agentAPI,
 		Commands:    &commands.Service{Store: st, Hub: hub, Browser: browser},
 		Credentials: &credentials.Service{Store: st, Hub: hub},
+		Mesh:        meshSvc,
 		Backup:      backupSvc,
 		Dashboard:   &dashboard.Service{Store: st},
 		Settings:    &settings.Service{Store: st, TG: tg},
 		Container:   &container.Service{Hub: hub, Store: st},
-		Domains:     &domains.Service{Store: st},
-		DNS:         &dns.Service{Store: st},
-		Tunnels:     &tunnels.Service{Store: st, Nodes: nodesSvc},
 		Health:      healthSvc,
 		AuthAPI:     &authapi.Service{Store: st, Browser: browser, Dev: *dev},
 	}

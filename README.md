@@ -1,6 +1,6 @@
 # NodePanel
 
-自托管的多服务器管理面板。在一台主控上管理任意数量的云主机：容器、备份与迁移、Cloudflare 隧道 / DNS、健康监控、命令执行与定时任务——节点只需出站连接，无需开放入站端口。
+自托管的多服务器管理面板。在一台主控上管理任意数量的云主机：容器、备份与迁移、健康监控、命令执行与定时任务——节点只需出站连接，无需开放入站端口。
 
 ## 功能
 
@@ -12,8 +12,7 @@
 - **容器** — 跨节点实时列表；自动标注更新类型（latest / build / local / pinned）；一键批量更新、源码 `git pull` + 重建、换镜像、扫描远端 digest
 - **备份** — 容器卷 / 任意目录打包（tar.gz，分块上传）；目标：GitHub / OneDrive / SFTP / S3·MinIO；按份数 / 天数保留；restic 增量；僵尸任务自动回收
 - **恢复** — 任意快照恢复到任一节点；从归档重建容器（端口重映射、网络兜底）；恢复前预检（端口 / 路径 / 镜像 / 磁盘）
-- **迁移** — 跨节点无损迁移（数据 + 端口 + 域名）：备份 → 预检 → 重建 → 隧道域名改指 → 可选删源
-- **Cloudflare** — 隧道创建 / 启停 / 重命名 / 删除；hostname ingress 增删改与跨隧道移动；通用 DNS 编辑器（A/AAAA/CNAME/MX/TXT…）
+- **迁移** — 跨节点迁移容器数据与端口：备份 → 预检 → 重建 → 可选删源；公网域名由 NPM 等外部反向代理管理
 - **健康** — 一键装卸 Netdata（loopback，不经 Cloud）；CPU / 内存 / 磁盘 / 网络等告警，Telegram 推送
 - **命令与凭据** — 多节点广播执行、实时输出；SSH 密钥上传 / 扫描 / 登录测试；内置安全加固预设
 - **防火墙** — ufw / firewalld 检测、端口开关、应用配置展开
@@ -44,7 +43,7 @@
 |----|------|
 | 系统 | Linux（amd64 / arm64） |
 | 软件 | Docker + Docker Compose v2 |
-| 网络 | 域名解析到本机（或走 Cloudflare Tunnel）；反代需支持 **WebSocket** |
+| 网络 | 域名解析到本机；反向代理（如 NPM）需支持 **WebSocket** |
 | 磁盘 | 建议 ≥ 5 GB（备份暂存会占用空间） |
 
 ### 方式一：Docker Compose（推荐）
@@ -124,10 +123,6 @@ master 默认监听本机；同样需要反代提供 HTTPS。首次可用命令�
 1. 新增 Proxy Host：域名 → `127.0.0.1:8088`
 2. 打开 **Websockets Support**
 3. SSL → Let's Encrypt（域名在 Cloudflare 时建议 DNS Challenge）
-
-**Cloudflare Tunnel**
-
-在面板「隧道」或 `cloudflared` 中把 hostname 指到 `http://127.0.0.1:8088`，需开启 WebSocket。
 
 **裸 Nginx 示例**
 

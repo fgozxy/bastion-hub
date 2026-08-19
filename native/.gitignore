@@ -1,8 +1,0 @@
-.gradle/
-build/
-app/build/
-local.properties
-
-# Release signing material — backup lives in /root/ops/keys/nodepanel-release/
-keystore/*.keystore
-keystore/signing.properties

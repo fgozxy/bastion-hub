@@ -35,6 +35,10 @@ func (s *Service) GetAll(w http.ResponseWriter, r *http.Request) {
 	all, _ := s.Store.AllSettings(ctx)
 	out := map[string]any{}
 	for k, v := range all {
+		// Never expose a legacy disaster-recovery key left by an older version.
+		if k == "peer_key" {
+			continue
+		}
 		var parsed any
 		if json.Unmarshal([]byte(v), &parsed) == nil {
 			out[k] = parsed
@@ -146,19 +150,6 @@ func (s *Service) PutContainerMonitor(w http.ResponseWriter, r *http.Request) {
 	}
 	b, _ := json.Marshal(map[string]any{"enabled": body.Enabled, "interval_seconds": body.IntervalSeconds})
 	_ = s.Store.SetSetting(r.Context(), "container_monitor", string(b))
-	httpx.OK(w, map[string]string{"ok": "1"})
-}
-
-// PutDomain PUT /api/settings/domain {public_url}
-func (s *Service) PutDomain(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		PublicURL string `json:"public_url"`
-	}
-	if err := httpx.ReadJSON(r, &body); err != nil {
-		httpx.Err(w, 400, "invalid body")
-		return
-	}
-	_ = s.Store.SetSetting(r.Context(), "public_url", strings.TrimRight(body.PublicURL, "/"))
 	httpx.OK(w, map[string]string{"ok": "1"})
 }
 

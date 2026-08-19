@@ -9,8 +9,6 @@ import { HealthPage } from './pages/Health';
 import { CommandsPage } from './pages/Commands';
 import { CredentialsPage } from './pages/Credentials';
 import { ContainersPage } from './pages/Containers';
-import { TunnelsPage } from './pages/Tunnels';
-import { DnsPage } from './pages/Dns';
 import { BackupPage } from './pages/Backup';
 import { SettingsPage } from './pages/Settings';
 
@@ -37,9 +35,6 @@ export default function App() {
             <Route path="commands" element={<CommandsPage />} />
             <Route path="credentials" element={<CredentialsPage />} />
             <Route path="containers" element={<ContainersPage />} />
-            <Route path="domains" element={<Navigate to="/tunnels" replace />} />
-            <Route path="tunnels" element={<TunnelsPage />} />
-            <Route path="dns" element={<DnsPage />} />
             <Route path="backup" element={<BackupPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>

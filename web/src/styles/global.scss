@@ -22,11 +22,6 @@ body {
   overscroll-behavior: none;
 }
 
-// Capacitor / standalone PWA: hide APK download prompts inside the shell app.
-body.is-native-shell .apk-download-hint {
-  display: none !important;
-}
-
 a {
   color: inherit;
   text-decoration: none;

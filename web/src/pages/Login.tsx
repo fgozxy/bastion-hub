@@ -45,10 +45,6 @@ export function LoginPage() {
         <button className="btn primary" style={{ width: '100%', justifyContent: 'center' }} disabled={busy}>
           {busy ? '登录中…' : '登录'}
         </button>
-        <p className="page-subtitle apk-download-hint" style={{ marginTop: 14, marginBottom: 0, textAlign: 'center' }}>
-          <a href="/downloads/NodePanel.apk">下载 Android 安装包</a>
-          <span style={{ opacity: 0.65 }}> · 允许未知来源后安装</span>
-        </p>
       </form>
     </div>
   );

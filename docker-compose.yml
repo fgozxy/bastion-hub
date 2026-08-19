@@ -8,6 +8,9 @@ services:
     # proxy (Nginx Proxy Manager / Cloudflare) forwarding to 127.0.0.1:8088.
     ports:
       - "127.0.0.1:8088:8088"
+    environment:
+      # 0 = 关闭自动 mesh 同步（不再自动下发/恢复 22022 端口按 IP 限制的防火墙）
+      - NODEPANEL_MESH_AUTO=${NODEPANEL_MESH_AUTO:-}
     volumes:
       # Persist the SQLite DB, served agent binaries, and staged backups.
       - /var/lib/nodepanel:/var/lib/nodepanel

@@ -18,13 +18,11 @@ import (
 	"nodepanel/master/internal/container"
 	"nodepanel/master/internal/credentials"
 	"nodepanel/master/internal/dashboard"
-	"nodepanel/master/internal/dns"
-	"nodepanel/master/internal/domains"
 	"nodepanel/master/internal/health"
+	"nodepanel/master/internal/mesh"
 	"nodepanel/master/internal/nodes"
 	"nodepanel/master/internal/settings"
 	"nodepanel/master/internal/store"
-	"nodepanel/master/internal/tunnels"
 	"nodepanel/master/internal/webassets"
 )
 
@@ -36,13 +34,11 @@ type Deps struct {
 	AgentAPI    *agentapi.Service
 	Commands    *commands.Service
 	Credentials *credentials.Service
+	Mesh        *mesh.Service
 	Backup      *backup.Service
 	Dashboard   *dashboard.Service
 	Settings    *settings.Service
 	Container   *container.Service
-	Domains     *domains.Service
-	DNS         *dns.Service
-	Tunnels     *tunnels.Service
 	Health      *health.Service
 	AuthAPI     *authapi.Service
 }
@@ -118,6 +114,9 @@ func Routes(d *Deps) http.Handler {
 		r.Post("/api/credentials/scan-multi", d.Credentials.ScanFromNodes)
 		r.Post("/api/credentials/import", d.Credentials.ImportFromNode)
 
+		r.Post("/api/mesh/provision", d.Mesh.Provision)
+		r.Get("/api/mesh/status", d.Mesh.Status)
+
 		r.Get("/api/backups", d.Backup.List)
 		r.Post("/api/backups/now", d.Backup.BackupNow)
 		r.Post("/api/backups/{id}/restore", d.Backup.Restore)
@@ -155,7 +154,6 @@ func Routes(d *Deps) http.Handler {
 		r.Post("/api/settings/telegram/test", d.Settings.TestTelegram)
 		r.Put("/api/settings/retention", d.Settings.PutRetention)
 		r.Put("/api/settings/excludes", d.Settings.PutExcludes)
-		r.Put("/api/settings/domain", d.Settings.PutDomain)
 		r.Put("/api/settings/cloudflare", d.Settings.PutCloudflare)
 		r.Put("/api/settings/container-monitor", d.Settings.PutContainerMonitor)
 		r.Put("/api/settings/komari", d.Settings.PutKomari)
@@ -170,27 +168,6 @@ func Routes(d *Deps) http.Handler {
 		r.Post("/api/containers/scan-updates", d.Container.ScanUpdates)
 		r.Put("/api/containers/name", d.Container.SetName)
 
-		// 域名板块 — Cloudflare Tunnel ingress (domain routing) management.
-		r.Get("/api/domains", d.Domains.List)
-		r.Post("/api/domains/rule", d.Domains.AddRule)
-		r.Put("/api/domains/rule", d.Domains.EditRule)
-		r.Delete("/api/domains/rule", d.Domains.DeleteRule)
-		r.Post("/api/domains/move", d.Domains.Move)
-
-		// DNS 板块 — Cloudflare DNS 记录管理（任意 zone / 任意记录类型，纯 CF API 透传）。
-		r.Get("/api/dns/zones", d.DNS.Zones)
-		r.Get("/api/dns/records", d.DNS.Records)
-		r.Post("/api/dns/records", d.DNS.CreateRecord)
-		r.Put("/api/dns/records/{id}", d.DNS.UpdateRecord)
-		r.Delete("/api/dns/records/{id}", d.DNS.DeleteRecord)
-
-		// 隧道板块 — create/monitor/start/stop/delete/rename Cloudflare Tunnels.
-		r.Get("/api/tunnels", d.Tunnels.List)
-		r.Post("/api/tunnels", d.Tunnels.Create)
-		r.Post("/api/tunnels/{id}/start", d.Tunnels.Start)
-		r.Post("/api/tunnels/{id}/stop", d.Tunnels.Stop)
-		r.Patch("/api/tunnels/{id}", d.Tunnels.Rename)
-		r.Delete("/api/tunnels/{id}", d.Tunnels.Delete)
 	})
 
 	// --- SPA (embedded frontend) ---
@@ -207,6 +184,10 @@ func spaHandler() http.HandlerFunc {
 	}
 	fileServer := http.FileServer(http.FS(sub))
 	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
 		p := strings.TrimPrefix(r.URL.Path, "/")
 		if p == "" {
 			p = "index.html"
@@ -218,38 +199,16 @@ func spaHandler() http.HandlerFunc {
 			fileServer.ServeHTTP(w, r2)
 			return
 		}
-		// APK is a ZIP archive; Go's mime maps .apk → application/zip, which
-		// makes Android save/open it as a compressed folder. Force the Android
-		// package MIME so browsers offer direct install (same as BEAST).
-		if strings.HasSuffix(strings.ToLower(p), ".apk") {
-			// Force Android package MIME (Go defaults .apk → application/zip).
-			// Also bypass CDN caching of a wrong Content-Type once set.
-			w.Header().Set("Content-Type", "application/vnd.android.package-archive")
-			w.Header().Set("Content-Disposition", `attachment; filename="`+pathBase(p)+`"`)
-			w.Header().Set("Cache-Control", "private, no-cache")
-			w.Header().Set("CDN-Cache-Control", "no-store")
-		}
 		fileServer.ServeHTTP(w, r)
 	}
 }
 
-func pathBase(p string) string {
-	if i := strings.LastIndex(p, "/"); i >= 0 {
-		return p[i+1:]
-	}
-	return p
-}
-
-// Run starts the server (TLS in prod, plain HTTP in dev).
+// Run starts the HTTP server. Public HTTPS is terminated by the reverse proxy.
 func Run(d *Deps) error {
-	handler := Routes(d)
-	if d.Cfg.Dev {
-		srv := &http.Server{
-			Addr:              d.Cfg.DevAddr,
-			Handler:           handler,
-			ReadHeaderTimeout: 10 * time.Second,
-		}
-		return srv.ListenAndServe()
+	srv := &http.Server{
+		Addr:              d.Cfg.DevAddr,
+		Handler:           Routes(d),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
-	return runTLS(d, handler)
+	return srv.ListenAndServe()
 }

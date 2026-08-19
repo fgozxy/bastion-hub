@@ -9,13 +9,3 @@ master/internal/webassets/dist/
 *.log
 .env
 .tmp/
-mobile/node_modules/
-mobile/android/.gradle/
-mobile/android/app/build/
-mobile/android/build/
-mobile/android/local.properties
-mobile/*.apk
-mobile/nodepanel.keystore
-mobile/.keystore-pass
-mobile/*.keystore
-web/public/downloads/*.apk

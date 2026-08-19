@@ -7,8 +7,6 @@ import {
   TerminalSquare,
   KeyRound,
   Boxes,
-  Route,
-  Globe,
   Archive,
   Settings,
   LogOut,
@@ -30,8 +28,6 @@ const nav = [
   { path: '/commands', label: '命令', icon: TerminalSquare },
   { path: '/credentials', label: '凭证', icon: KeyRound },
   { path: '/containers', label: '容器', icon: Boxes },
-  { path: '/tunnels', label: '隧道', icon: Route },
-  { path: '/dns', label: 'DNS', icon: Globe },
   { path: '/backup', label: '备份', icon: Archive },
   { path: '/settings', label: '设置', icon: Settings },
 ];

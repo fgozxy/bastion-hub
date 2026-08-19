@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, Send, RefreshCw, Globe, ShieldCheck, Github, UploadCloud, Cloud, Radar } from 'lucide-react';
+import { Save, Send, RefreshCw, Github, UploadCloud, Cloud, Radar } from 'lucide-react';
 import { api } from '../services/api';
 import { notify } from '../stores';
 import { MultiSelect } from '../components/MultiSelect';
@@ -9,7 +9,7 @@ export function SettingsPage() {
   return (
     <div>
       <h1 className="page-title">设置</h1>
-      <p className="page-subtitle">账户、通知、容器更新、域名证书、Cloudflare 与 GitHub 集成</p>
+      <p className="page-subtitle">账户、通知、容器更新、Cloudflare 与 GitHub 集成</p>
       <div className="tab-bar" role="tablist">
         {[
           ['account', '账户'],
@@ -19,7 +19,6 @@ export function SettingsPage() {
           ['backup', 'GitHub'],
           ['cloudflare', 'Cloudflare'],
           ['komari', 'Komari'],
-          ['domain', '域名证书'],
         ].map(([k, l]) => (
           <button
             key={k}
@@ -40,7 +39,6 @@ export function SettingsPage() {
       {tab === 'backup' && <GithubTab />}
       {tab === 'cloudflare' && <CloudflareTab />}
       {tab === 'komari' && <KomariTab />}
-      {tab === 'domain' && <DomainTab />}
     </div>
   );
 }
@@ -73,11 +71,6 @@ function AccountTab() {
       <button className="btn primary" onClick={save}>
         <Save size={14} /> 保存
       </button>
-      <p className="page-subtitle apk-download-hint" style={{ marginTop: 16, marginBottom: 0 }}>
-        Android 壳应用：{' '}
-        <a href="/downloads/NodePanel.apk">下载 NodePanel.apk</a>
-        （Debug 签名，需允许未知来源）
-      </p>
     </div>
   );
 }
@@ -332,46 +325,6 @@ function MonitorTab() {
       </div>
       <button className="btn primary" onClick={save} disabled={saving}>
         <Save size={14} /> {saving ? '保存中…' : '保存'}
-      </button>
-    </div>
-  );
-}
-
-function DomainTab() {
-  const [url, setUrl] = useState('');
-  useEffect(() => {
-    api.settings.all().then((r: any) => setUrl(r.public_url || ''));
-  }, []);
-  const save = async () => {
-    try {
-      await api.settings.putDomain(url);
-      notify('已保存（面板安装命令将使用该地址）', 'success');
-    } catch (e: any) {
-      notify(e?.response?.data?.error || '失败', 'error');
-    }
-  };
-  return (
-    <div className="card" style={{ padding: 18, maxWidth: 520 }}>
-      <div className="row" style={{ gap: 10, marginBottom: 8 }}>
-        <ShieldCheck size={18} color="var(--success)" />
-        <strong>HTTPS 证书</strong>
-      </div>
-      <p style={{ marginTop: 0, color: 'var(--text-secondary)' }}>
-        面板通过 Let's Encrypt 自动申请并续期证书（HTTP-01）。请确保域名已解析到本机且 80/443 端口可达。
-        <code className="mono" style={{ background: 'var(--bg-tertiary)', padding: '1px 5px', borderRadius: 4 }}>
-          *.example.com
-        </code>{' '}
-        已指向本服务器，可使用任意子域名（如 panel.example.com）。
-      </p>
-      <div className="field">
-        <label>面板对外地址（用于生成节点安装命令）</label>
-        <div className="row">
-          <Globe size={16} color="var(--text-tertiary)" />
-          <input className="input" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://panel.example.com" />
-        </div>
-      </div>
-      <button className="btn primary" onClick={save}>
-        <Save size={14} /> 保存
       </button>
     </div>
   );
