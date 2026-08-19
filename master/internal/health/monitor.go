@@ -323,7 +323,7 @@ func (s *Service) evaluate(ctx context.Context, nodeID, nodeName string, sp Samp
 		case breaching && now-a.BreachSince >= int64(a.WindowSec) && a.LastNotified < a.BreachSince:
 			// held past the window and not yet announced this outage
 			if s.TG != nil {
-				s.TG.Notify(ctx, formatBreach(nodeName, a, v, threshold))
+				s.TG.Notify(ctx, formatBreach(nodeName, a, sp, v, threshold))
 			}
 			_ = s.Store.TouchHealthAlertState(ctx, a.ID, a.BreachSince, now)
 		case !breaching && a.BreachSince != 0:
@@ -333,9 +333,79 @@ func (s *Service) evaluate(ctx context.Context, nodeID, nodeName string, sp Samp
 	}
 }
 
-func formatBreach(node string, a store.HealthAlert, v, threshold float64) string {
-	return fmt.Sprintf("⚠️ 健康告警\n──────────\n所属节点: %s\n指标: %s\n当前值: %s\n阈值: %s\n持续: %ds",
-		orNA(node), a.Metric, fmtVal(v, a.Metric), fmtVal(threshold, a.Metric), a.WindowSec)
+func formatBreach(node string, a store.HealthAlert, sp Sample, v, threshold float64) string {
+	p := healthAlertPresentation(a.Metric)
+	thresholdText := fmtVal(threshold, a.Metric)
+	currentText := fmtVal(v, a.Metric)
+	resourceLine := ""
+	if isLoadMetric(a.Metric) && sp.Cores > 0 {
+		resourceLine = fmt.Sprintf("\nCPU 核心：%d 核", sp.Cores)
+		currentText = fmt.Sprintf("%s（每核 %.2f）", currentText, v/float64(sp.Cores))
+	}
+	if (a.Metric == "load" || a.Metric == "load1") && a.Threshold == 0 && sp.Cores > 0 {
+		thresholdText = fmt.Sprintf("%s（%d 核 × 2）", thresholdText, sp.Cores)
+	}
+	return fmt.Sprintf("⚠️ 健康告警｜%s\n──────────\n节点：%s\n问题：%s%s\n当前：%s\n阈值：%s\n持续：≥ %d 秒",
+		p.Title, orNA(node), p.Metric, resourceLine, currentText, thresholdText, a.WindowSec)
+}
+
+func isLoadMetric(metric string) bool {
+	return metric == "load" || metric == "load1" || metric == "load5" || metric == "load15"
+}
+
+type alertPresentation struct {
+	Title  string
+	Metric string
+}
+
+func healthAlertPresentation(metric string) alertPresentation {
+	switch metric {
+	case "cpu":
+		return alertPresentation{
+			Title:  "CPU 使用率过高",
+			Metric: "CPU 使用率",
+		}
+	case "mem":
+		return alertPresentation{
+			Title:  "内存使用率过高",
+			Metric: "物理内存使用率",
+		}
+	case "disk":
+		return alertPresentation{
+			Title:  "磁盘空间不足",
+			Metric: "磁盘空间使用率",
+		}
+	case "iowait":
+		return alertPresentation{
+			Title:  "磁盘 I/O 等待过高",
+			Metric: "CPU I/O Wait",
+		}
+	case "swap":
+		return alertPresentation{
+			Title:  "Swap 使用率过高",
+			Metric: "Swap 使用率",
+		}
+	case "load", "load1":
+		return alertPresentation{
+			Title:  "系统任务负载过高",
+			Metric: "1 分钟任务队列平均数（运行或等待 I/O）",
+		}
+	case "load5":
+		return alertPresentation{
+			Title:  "系统任务负载过高",
+			Metric: "5 分钟任务队列平均数（运行或等待 I/O）",
+		}
+	case "load15":
+		return alertPresentation{
+			Title:  "系统任务负载长期过高",
+			Metric: "15 分钟任务队列平均数（运行或等待 I/O）",
+		}
+	default:
+		return alertPresentation{
+			Title:  "指标超过阈值",
+			Metric: metric,
+		}
+	}
 }
 
 func fmtVal(v float64, metric string) string {
