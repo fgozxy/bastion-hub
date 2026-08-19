@@ -204,7 +204,7 @@ func TestRunContainerUpdateCountsStructuredAndLegacyFailures(t *testing.T) {
 		}
 		scanData, err := json.Marshal(proto.ContainerScanResult{OK: true, Items: []proto.ContainerScanItem{
 			{Name: "new", State: "running", UpdateType: "latest", HasUpdate: 1},
-			{Name: "legacy", UpdateType: "tag", HasUpdate: 1}, // pre-2.4 state compatibility
+			{Name: "legacy", UpdateType: "latest", HasUpdate: 1}, // pre-2.4 state compatibility
 			{Name: "current", State: "running", UpdateType: "latest", HasUpdate: 0},
 			{Name: "stopped", State: "exited", UpdateType: "latest", HasUpdate: 1},
 			{Name: "mystery", State: "running", UpdateType: "latest", HasUpdate: -1},
@@ -415,6 +415,43 @@ func TestRunContainerUpdateNodeNoCandidatesSucceedsWithoutUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !out.succeeded || out.scanned != 1 || out.candidates != 0 || out.unchanged != 1 || len(out.failures) != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+}
+
+func TestRunContainerUpdateNodeReportsMissingSelectedContainer(t *testing.T) {
+	st := openSchedulerTestStore(t)
+	hub := agenthub.New(agenthub.Handlers{})
+	client := connectSchedulerTestAgent(t, hub, "n1")
+	ctx := context.Background()
+	if _, err := st.DB.ExecContext(ctx, `INSERT INTO nodes(id,name,enrollment_token,status,agent_version,created_at)
+		VALUES('n1','Node 1','tok-n1','online','2.4.0',1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	responseErr := make(chan error, 1)
+	go func() {
+		var req proto.Envelope
+		if err := client.ReadJSON(&req); err != nil {
+			responseErr <- err
+			return
+		}
+		data, err := json.Marshal(proto.ContainerScanResult{OK: true, Items: []proto.ContainerScanItem{
+			{Name: "current-name", State: "running", UpdateType: "tag", HasUpdate: 0},
+		}})
+		if err == nil {
+			err = client.WriteJSON(proto.Envelope{Type: proto.MsgContainerScanResult, ID: req.ID, Data: data})
+		}
+		responseErr <- err
+	}()
+
+	sc := New(st, nil, hub, nil)
+	out := sc.runContainerUpdateNode("schedule-stale", "n1", "", "stamp", map[string]struct{}{"old-name": {}})
+	if err := <-responseErr; err != nil {
+		t.Fatal(err)
+	}
+	if out.succeeded || out.failed != 1 || len(out.failures) != 1 ||
+		!strings.Contains(out.failures[0], "n1/old-name: configured container missing") {
 		t.Fatalf("outcome = %+v", out)
 	}
 }

@@ -23,7 +23,7 @@ import (
 )
 
 // AgentVersion is reported to the panel.
-const AgentVersion = "2.4.6" // 2.4.6: auto-prune dangling images after update/rebuild/upgrade. 2.4.5: auto-update by semver tag (not :latest digest churn). 2.4.4: IPv4 prefer + registry retry.
+const AgentVersion = "2.4.7" // 2.4.7: paginated registry tags + safe floating/variant updates. 2.4.6: auto-prune dangling images after update/rebuild/upgrade. 2.4.5: semver auto-update. 2.4.4: IPv4 prefer + registry retry.
 
 // Keepalive: the agent pings the panel every agentPingPeriod and expects a pong
 // within agentPongWait. The reverse WSS path goes through Cloudflare, which can
@@ -90,7 +90,7 @@ func (a *Agent) buildDialer(server string) *websocket.Dialer {
 		HandshakeTimeout: agentDialWait,
 		ReadBufferSize:   4096,
 		WriteBufferSize:  4096,
-        // Prefer IPv4: several nodes resolve panel.example.com to CF AAAA first and
+		// Prefer IPv4: several nodes resolve panel.example.com to CF AAAA first and
 		// then hang on broken/slow IPv6 paths (read tcp [...]:443 i/o timeout).
 		// Fall back to IPv6 only when no A record works.
 		NetDialContext: dialContextPreferIPv4,

@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -97,5 +99,66 @@ func TestParseRefNormalizesDockerHubLibraryImages(t *testing.T) {
 		if reg != "docker.io" || repo != "library/nginx" || tag != "latest" {
 			t.Errorf("parseRef(%q) = %q, %q, %q", ref, reg, repo, tag)
 		}
+	}
+}
+
+func TestRegistryListTagsFollowsPagination(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("n"); got != "100" {
+			t.Errorf("page size = %q, want 100", got)
+		}
+		switch r.URL.Query().Get("last") {
+		case "":
+			w.Header().Set("Link", `</v2/team/app/tags/list?n=100&last=v2.0.46>; rel="next"`)
+			_ = json.NewEncoder(w).Encode(map[string]any{"tags": []string{"latest", "v2.0.46"}})
+		case "v2.0.46":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tags": []string{"v2.0.46", "v3.0.5"}})
+		default:
+			t.Errorf("unexpected page URL %s", r.URL)
+		}
+	}))
+	defer server.Close()
+
+	image := strings.TrimPrefix(server.URL, "https://") + "/team/app:v3.0.2"
+	got, err := registryListTagsWithClient(server.Client(), image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"latest", "v2.0.46", "v3.0.5"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("tags = %#v, want %#v", got, want)
+	}
+}
+
+func TestRegistryListTagsRejectsCrossOriginPagination(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Link", `<https://attacker.example/tags>; rel="next"`)
+		_, _ = w.Write([]byte(`{"tags":["v1.0.0"]}`))
+	}))
+	defer server.Close()
+
+	image := strings.TrimPrefix(server.URL, "https://") + "/team/app:v1.0.0"
+	_, err := registryListTagsWithClient(server.Client(), image)
+	if err == nil || !strings.Contains(err.Error(), "changed registry endpoint") {
+		t.Fatalf("error = %v, want rejected cross-origin pagination", err)
+	}
+}
+
+func TestRegistryListTagsFailsWhenLaterPageFails(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("last") == "v1.0.0" {
+			http.Error(w, "temporary failure", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Link", `</v2/team/app/tags/list?n=100&last=v1.0.0>; rel="next"`)
+		_, _ = w.Write([]byte(`{"tags":["v1.0.0"]}`))
+	}))
+	defer server.Close()
+
+	image := strings.TrimPrefix(server.URL, "https://") + "/team/app:v1.0.0"
+	_, err := registryListTagsWithClient(server.Client(), image)
+	if err == nil || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("error = %v, want second-page failure", err)
 	}
 }

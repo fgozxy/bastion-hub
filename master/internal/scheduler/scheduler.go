@@ -417,8 +417,8 @@ func (sc *Scheduler) retryOfflineUnits(s store.Schedule, units []backupUnit, res
 
 type containerCfg struct {
 	Label      string         `json:"label"`
-	NodeIDs    []string       `json:"node_ids"`    // legacy multi-node update (fallback to schedule.NodeID)
-	Containers []backupTarget `json:"containers"`  // selective auto-update (preferred over node_ids)
+	NodeIDs    []string       `json:"node_ids"`   // legacy multi-node update (fallback to schedule.NodeID)
+	Containers []backupTarget `json:"containers"` // selective auto-update (preferred over node_ids)
 }
 
 // upgradedImage records a successful version-tag upgrade so the Telegram report
@@ -599,10 +599,26 @@ func (sc *Scheduler) runContainerUpdateNode(scheduleID, nodeID, label, stamp str
 	classifyItems := items
 	if len(allowNames) > 0 {
 		classifyItems = make([]proto.ContainerScanItem, 0, len(allowNames))
+		seen := make(map[string]struct{}, len(allowNames))
 		for _, it := range items {
 			if _, ok := allowNames[it.Name]; ok {
 				classifyItems = append(classifyItems, it)
+				seen[it.Name] = struct{}{}
 			}
+		}
+		// Container names are the stable schedule key across normal recreates,
+		// but Compose project/name migrations can still invalidate them. Never
+		// silently turn a stale configured target into a successful no-op.
+		missing := make([]string, 0)
+		for name := range allowNames {
+			if _, ok := seen[name]; !ok {
+				missing = append(missing, name)
+			}
+		}
+		sort.Strings(missing)
+		for _, name := range missing {
+			out.failed++
+			out.failures = append(out.failures, nodeID+"/"+name+": configured container missing from scan")
 		}
 	}
 
@@ -718,12 +734,10 @@ type candDesc struct {
 // scan results and returns the containers that should be auto-upgraded, plus the
 // per-node outcome counters for skipped/unchanged/candidate/unknown items.
 //
-// Policy: only real version upgrades (a non-empty SuggestedImage, i.e. a semver
-// tag bump) become candidates. An item with HasUpdate==1 but an empty
-// SuggestedImage is same-tag content drift (force-push or a legacy fixed tag
-// with no semver tags) — it is skipped, not applied and not reported, so
-// Telegram stays quiet for non-version churn and a deliberately pinned tag is
-// never overwritten by a force-push of the same tag.
+// Policy: real semver bumps carry SuggestedImage and are upgraded by rewriting
+// Compose. A configured floating channel such as :latest is refreshed in place
+// when its digest changes. Fixed-tag same-tag drift remains skipped so a
+// deliberately version-pinned service is not overwritten after a force-push.
 func classifyUpdateCandidates(items []proto.ContainerScanItem) ([]candDesc, containerUpdateOutcome) {
 	var descs []candDesc
 	var out containerUpdateOutcome
@@ -745,9 +759,8 @@ func classifyUpdateCandidates(items []proto.ContainerScanItem) ([]candDesc, cont
 				out.skipped++
 				continue
 			}
-			// Empty SuggestedImage = same-tag content drift, no version to upgrade
-			// to. Skip per the version-driven policy (see function doc).
-			if strings.TrimSpace(item.SuggestedImage) == "" {
+			// Only floating tags opt into same-tag content refreshes.
+			if strings.TrimSpace(item.SuggestedImage) == "" && item.UpdateType != "latest" {
 				out.skipped++
 				continue
 			}

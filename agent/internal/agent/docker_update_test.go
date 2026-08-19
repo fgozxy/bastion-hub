@@ -225,15 +225,8 @@ func TestScanPinnedImageDoesNotQueryRegistry(t *testing.T) {
 
 func TestScanUsesConfiguredImageRefAndRejectsImageIDFallback(t *testing.T) {
 	oldList := listTagsFn
-	// No semver tags for cloudflared in this test → digest-compare path.
-	// Floating latest without semver: policy is to NOT chase digest churn.
-	// Return a fake high semver so we exercise SuggestedImage upgrade path? For
-	// this test we want digest compare on latest when no tags — use empty list
-	// and expect HasUpdate=0 (ignore latest churn) OR return tags that force
-	// digest path. Empty list + floating → HasUpdate=0 with note.
-	// Override: pretend no list API, empty tags, but we still need old test
-	// expectation HasUpdate=1 for latest digest change. Keep empty tags and
-	// change expectation... User policy is no latest chase. Update expectation.
+	// No semver tags are needed for a floating channel: it compares the digest
+	// of the configured tag and never rewrites Compose to a guessed version.
 	listTagsFn = func(string) ([]string, error) { return nil, nil }
 	t.Cleanup(func() { listTagsFn = oldList })
 
@@ -276,12 +269,13 @@ func TestScanUsesConfiguredImageRefAndRejectsImageIDFallback(t *testing.T) {
 		t.Fatalf("scan result = %#v", result)
 	}
 	cloudflared := result.Items[0]
-	// Floating :latest with no semver tags: do not chase digest churn.
-	if cloudflared.Image != "cloudflare/cloudflared:latest" || cloudflared.UpdateType != "unmanaged" || cloudflared.HasUpdate != 0 || cloudflared.LocalDigest != "current" {
+	// Floating :latest follows same-tag digest changes without being rewritten
+	// to an unrelated semver tag. It remains unmanaged, so it is scan-only.
+	if cloudflared.Image != "cloudflare/cloudflared:latest" || cloudflared.UpdateType != "unmanaged" || cloudflared.HasUpdate != 1 || cloudflared.LocalDigest != "current" {
 		t.Fatalf("configured image ref was not recovered / latest policy wrong: %#v", cloudflared)
 	}
-	if !strings.Contains(cloudflared.Note, "latest") && !strings.Contains(cloudflared.Note, "版本") {
-		t.Fatalf("expected note about skipping latest, got %#v", cloudflared)
+	if !strings.Contains(cloudflared.Note, "浮动标签") {
+		t.Fatalf("expected note about floating-tag refresh, got %#v", cloudflared)
 	}
 	broken := result.Items[1]
 	if broken.UpdateType != "local" || broken.HasUpdate != -1 || !strings.Contains(broken.Note, "列表仅有镜像 ID") {
@@ -316,8 +310,8 @@ func TestApplyRegistryScanGroupRefusesCrossMajor(t *testing.T) {
 	}{
 		{name: "downgrade-blocked", ref: "myapp:5-alpine", tags: []string{"4.0.0", "3.0.0", "latest"}, wantNone: true},
 		{name: "upgrade-blocked", ref: "myapp:3-alpine", tags: []string{"5.0.0", "4.2.0", "latest"}, wantNone: true},
-		{name: "same-major-allowed", ref: "myapp:3-alpine", tags: []string{"3.9.0", "3.8.0", "latest"}, wantMaj: 3},
-		{name: "postgres-realistic", ref: "postgres:18-alpine", tags: []string{"latest", "18", "18-alpine", "17.5", "16.4", "9.6.24", "9.6.24-alpine"}, wantMaj: 18},
+		{name: "same-major-allowed", ref: "myapp:3-alpine", tags: []string{"3.9.0-alpine", "3.9.0-windowsservercore", "3.8.0-alpine", "latest"}, wantMaj: 3},
+		{name: "postgres-realistic", ref: "postgres:18-alpine", tags: []string{"latest", "18", "18.1-alpine", "18-alpine", "17.5", "16.4", "9.6.24", "9.6.24-alpine"}, wantMaj: 18},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -361,6 +355,26 @@ func TestApplyRegistryScanGroupRefusesCrossMajor(t *testing.T) {
 				t.Fatalf("suggested %q must never be the ancient 9.6.x downgrade target", it.SuggestedImage)
 			}
 		})
+	}
+}
+
+func TestApplyRegistryScanGroupDoesNotClaimCurrentWhenTagListFails(t *testing.T) {
+	dc := &dockerClient{c: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || !strings.HasSuffix(req.URL.Path, "/json") {
+			return dockerJSONResponse(http.StatusNotFound, nil), nil
+		}
+		return dockerJSONResponse(http.StatusOK, map[string]any{
+			"RepoDigests": []string{"registry.example/team/app@sha256:local"},
+		}), nil
+	})}}
+	items := []proto.ContainerScanItem{{Image: "registry.example/team/app:v3.0.2", HasUpdate: -1}}
+	applyRegistryScanGroup(dc,
+		func(string) (string, error) { return "local", nil },
+		func(string) ([]string, error) { return nil, errors.New("second page failed") },
+		items[0].Image, []int{0}, items, []string{"sha256:running"})
+
+	if items[0].HasUpdate != -1 || !strings.Contains(items[0].Note, "无法列出 registry 标签") {
+		t.Fatalf("incomplete tag scan was treated as conclusive: %#v", items[0])
 	}
 }
 

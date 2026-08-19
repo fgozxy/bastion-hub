@@ -45,6 +45,24 @@ func TestHighestSemverTag(t *testing.T) {
 	}
 }
 
+func TestHighestCompatibleSemverTagPreservesMajorAndVariant(t *testing.T) {
+	tests := []struct {
+		current string
+		tags    []string
+		want    string
+	}{
+		{current: "v3.0.2", tags: []string{"v2.0.46", "v3.0.3", "v3.0.5", "v4.0.0"}, want: "v3.0.5"},
+		{current: "3.12-slim", tags: []string{"3.15.0rc1-slim", "3.14-windowsservercore", "3.13-slim", "4.0-slim"}, want: "3.13-slim"},
+		{current: "18-alpine", tags: []string{"18.2", "18.1-alpine", "18.3-windowsservercore"}, want: "18.1-alpine"},
+		{current: "3.10.12-1", tags: []string{"3.10.13", "3.10.13-1", "3.10.12-2"}, want: "3.10.13-1"},
+	}
+	for _, tc := range tests {
+		if got := highestCompatibleSemverTag(tc.current, tc.tags); got != tc.want {
+			t.Errorf("highestCompatibleSemverTag(%q) = %q, want %q", tc.current, got, tc.want)
+		}
+	}
+}
+
 // TestParseSemverTagShortTags locks in the relaxed regex: 1- and 2-part numeric
 // tags must parse (missing segments = 0) so registries like postgres — which ship
 // modern releases as 2-part tags (18, 17.5) — are ranked instead of falling back

@@ -450,15 +450,13 @@ func scanContainers(dc *dockerClient, registryDigest func(string) (string, error
 }
 
 // applyRegistryScanGroup decides has_update for one image ref shared by several
-// containers. Policy (2.4.5+): prefer **semver tag upgrades** over chasing
-// :latest digest churn.
+// containers. Versioned tags may move only to a newer compatible tag in the
+// same major/flavour; floating channels refresh their configured tag in place.
 //
-//  1. List registry tags; if a higher semver tag exists whose digest differs
-//     from what is running → HasUpdate=1 + SuggestedImage=repo:newTag.
-//  2. Else if the configured tag is a floating channel (latest/edge/…) and no
-//     usable semver tags exist → fall back to same-tag digest compare (legacy).
-//  3. Else if configured tag is already a semver and it is the highest → 0.
-//  4. Floating tag whose digest matches the highest semver → 0 (ignore latest rebuilds).
+//  1. Floating latest/edge/stable tags use same-tag digest comparison and are
+//     never rewritten to a guessed version tag.
+//  2. Versioned tags select the highest same-major, same-variant stable tag.
+//  3. Cross-major changes and fixed-tag force-pushes are never auto-applied.
 //
 // listTagsFn is the registry tag lister used by scans. Overridden in tests so
 // unit tests do not hit the network and still exercise digest-compare paths.
@@ -479,7 +477,11 @@ func applyRegistryScanGroup(dc *dockerClient, registryDigest func(string) (strin
 	_, _, curTag := parseRef(ref)
 	bestTag := ""
 	if tagsErr == nil {
-		bestTag = highestSemverTag(tags)
+		bestTag = highestCompatibleSemverTag(curTag, tags)
+	}
+	bestOverallTag := ""
+	if tagsErr == nil {
+		bestOverallTag = highestSemverTag(tags)
 	}
 
 	var bestDigest string
@@ -523,6 +525,32 @@ func applyRegistryScanGroup(dc *dockerClient, registryDigest func(string) (strin
 			continue
 		}
 
+		// Floating channels explicitly opt into following content published to
+		// that channel. Refresh the same tag instead of rewriting Compose to an
+		// arbitrary semver tag (which could silently cross a major version).
+		if floatingOrLatest(curTag) {
+			if sameErr != nil {
+				items[idx].Note = "无法检测 registry: " + sameErr.Error()
+				continue
+			}
+			items[idx].RegistryDigest = sameDigest
+			if sameDigest == local.digest {
+				items[idx].HasUpdate = 0
+				items[idx].Note = "运行镜像与远端浮动标签内容一致"
+			} else {
+				items[idx].HasUpdate = 1
+				items[idx].Note = "远端浮动标签内容已变化"
+			}
+			continue
+		}
+		// A versioned tag needs the complete tag set to decide whether a newer
+		// compatible release exists. Falling back to same-tag equality after a
+		// pagination/list failure would create a false "up to date" result.
+		if tagsErr != nil {
+			items[idx].Note = "无法列出 registry 标签: " + tagsErr.Error()
+			continue
+		}
+
 		// --- Semver path: only upgrade when a higher version tag exists ---
 		if bestTag != "" {
 			if bestErr != nil {
@@ -556,12 +584,7 @@ func applyRegistryScanGroup(dc *dockerClient, registryDigest func(string) (strin
 				// Running content already matches the highest semver tag.
 				if bestDigest == local.digest {
 					items[idx].HasUpdate = 0
-					if floatingOrLatest(curTag) && curTag != bestTag {
-						// Still on :latest but content == best tag — suggest pin note only.
-						items[idx].Note = "已是最新版本 " + bestTag + "（忽略 latest 重建）"
-					} else {
-						items[idx].Note = "运行镜像与远端版本 " + bestTag + " 一致"
-					}
+					items[idx].Note = "运行镜像与远端版本 " + bestTag + " 一致"
 					continue
 				}
 				// Higher semver than configured, or floating channel behind best tag.
@@ -586,12 +609,21 @@ func applyRegistryScanGroup(dc *dockerClient, registryDigest func(string) (strin
 			}
 		}
 
-		// --- No semver tags: legacy same-tag digest compare (non-floating only
-		//     would be rare; floating without semver still uses this) ---
-		if tagsErr != nil && bestTag == "" {
-			// Tag list failed — try same-tag digest only.
-			sameDigest, sameErr = registryDigest(stripDigest(ref))
+		// If compatible tags were absent but another major exists, report that
+		// explicitly rather than comparing or rewriting across the boundary.
+		curSV, curIsSV := parseSemverTag(curTag)
+		allSV, allIsSV := parseSemverTag(bestOverallTag)
+		if curIsSV && allIsSV && curSV.Major != allSV.Major {
+			items[idx].HasUpdate = 0
+			if curSV.Major < allSV.Major {
+				items[idx].Note = "检测到新大版本 " + bestOverallTag + "（当前 " + curTag + "），跨大版本不自动更新，请手动确认"
+			} else {
+				items[idx].Note = "当前大版本 " + curTag + " 高于远端最高 " + bestOverallTag + "，不自动降级"
+			}
+			continue
 		}
+
+		// --- No compatible semver tags: same-tag digest compare. ---
 		if sameErr != nil {
 			items[idx].Note = "无法检测 registry: " + sameErr.Error()
 			continue
@@ -607,13 +639,6 @@ func applyRegistryScanGroup(dc *dockerClient, registryDigest func(string) (strin
 			continue
 		}
 		items[idx].RegistryDigest = sameDigest
-		if floatingOrLatest(curTag) && bestTag == "" {
-			// Floating channel with zero semver tags in the repo: do NOT chase
-			// digest churn (this was the old noisy behaviour for :latest).
-			items[idx].HasUpdate = 0
-			items[idx].Note = "无版本 tag 可升级（已忽略 latest 内容变化）"
-			continue
-		}
 		if sameDigest == local.digest {
 			items[idx].HasUpdate = 0
 			items[idx].Note = "运行镜像与远端标签内容一致"

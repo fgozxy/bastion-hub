@@ -247,34 +247,129 @@ func registryListTagsWithClient(client *http.Client, image string) ([]string, er
 	if err != nil {
 		return nil, err
 	}
-	tagsURL := fmt.Sprintf("https://%s/v2/%s/tags/list", registryAPIHost(reg), repo)
-	req, err := http.NewRequest(http.MethodGet, tagsURL, nil)
+	tagsURL, err := url.Parse(fmt.Sprintf("https://%s/v2/%s/tags/list", registryAPIHost(reg), repo))
 	if err != nil {
 		return nil, err
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("list tags: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		detail := strings.TrimSpace(string(body))
-		if detail != "" {
-			return nil, fmt.Errorf("list tags status %s: %s", resp.Status, detail)
+	// Registries are allowed to paginate this endpoint. GHCR, for example,
+	// returns only 100 tags by default and places newer tags on later pages.
+	// Missing the Link header used to make v3.0.2 look newer than the truncated
+	// first-page maximum v2.0.46, so the scheduler incorrectly suppressed a real
+	// upgrade. Ask for a bounded page size and follow rel=next until exhausted.
+	q := tagsURL.Query()
+	q.Set("n", strconv.Itoa(registryTagsPageSize))
+	tagsURL.RawQuery = q.Encode()
+
+	var tags []string
+	seenTags := make(map[string]struct{})
+	seenPages := make(map[string]struct{})
+	for page := 0; tagsURL != nil; page++ {
+		if page >= registryTagsMaxPages {
+			return nil, fmt.Errorf("list tags: pagination exceeded %d pages", registryTagsMaxPages)
 		}
-		return nil, fmt.Errorf("list tags status %s", resp.Status)
+		pageURL := tagsURL.String()
+		if _, exists := seenPages[pageURL]; exists {
+			return nil, fmt.Errorf("list tags: pagination loop at %s", pageURL)
+		}
+		seenPages[pageURL] = struct{}{}
+
+		req, err := http.NewRequest(http.MethodGet, pageURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("list tags: %w", err)
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, registryTagsPageBytes+1))
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read tags: %w", readErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			detail := strings.TrimSpace(string(body))
+			if detail != "" {
+				return nil, fmt.Errorf("list tags status %s: %s", resp.Status, tailString(detail, 4096))
+			}
+			return nil, fmt.Errorf("list tags status %s", resp.Status)
+		}
+		if len(body) > registryTagsPageBytes {
+			return nil, fmt.Errorf("list tags: page exceeds %d bytes", registryTagsPageBytes)
+		}
+		var out struct {
+			Tags []string `json:"tags"`
+		}
+		if err := json.Unmarshal(body, &out); err != nil {
+			return nil, fmt.Errorf("decode tags: %w", err)
+		}
+		for _, tag := range out.Tags {
+			if _, exists := seenTags[tag]; exists {
+				continue
+			}
+			seenTags[tag] = struct{}{}
+			tags = append(tags, tag)
+			if len(tags) > registryTagsMaxCount {
+				return nil, fmt.Errorf("list tags: exceeds %d tags", registryTagsMaxCount)
+			}
+		}
+
+		tagsURL, err = registryNextLink(tagsURL, resp.Header.Values("Link"))
+		if err != nil {
+			return nil, fmt.Errorf("list tags: %w", err)
+		}
 	}
-	var out struct {
-		Tags []string `json:"tags"`
+	return tags, nil
+}
+
+const (
+	registryTagsPageSize  = 100
+	registryTagsMaxPages  = 100
+	registryTagsMaxCount  = 10000
+	registryTagsPageBytes = 2 << 20
+)
+
+// registryNextLink returns a validated rel=next URL. Credentials must never be
+// forwarded to another origin even if a registry sends a malicious Link value.
+func registryNextLink(current *url.URL, headers []string) (*url.URL, error) {
+	for _, header := range headers {
+		for _, part := range strings.Split(header, ",") {
+			fields := strings.Split(part, ";")
+			isNext := false
+			for _, field := range fields[1:] {
+				key, value, ok := strings.Cut(strings.TrimSpace(field), "=")
+				if ok && strings.EqualFold(key, "rel") && strings.EqualFold(strings.Trim(value, `"`), "next") {
+					isNext = true
+					break
+				}
+			}
+			if len(fields) < 2 || !isNext {
+				continue
+			}
+			raw := strings.TrimSpace(fields[0])
+			if len(raw) < 3 || raw[0] != '<' || raw[len(raw)-1] != '>' {
+				return nil, fmt.Errorf("invalid pagination Link %q", part)
+			}
+			next, err := current.Parse(raw[1 : len(raw)-1])
+			if err != nil {
+				return nil, fmt.Errorf("invalid pagination URL: %w", err)
+			}
+			if next.Scheme != current.Scheme || next.Host != current.Host || next.Path != current.Path {
+				return nil, fmt.Errorf("pagination URL changed registry endpoint")
+			}
+			return next, nil
+		}
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decode tags: %w", err)
+	return nil, nil
+}
+
+func tailString(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return out.Tags, nil
+	return s[len(s)-n:]
 }
 
 // Minor and Patch are optional so registries that ship short tags are ranked
@@ -360,6 +455,87 @@ func highestSemverTag(tags []string) string {
 	return best.Raw
 }
 
+// highestCompatibleSemverTag keeps automatic upgrades inside the configured
+// major version and image flavour. Tags such as 3.12-slim and
+// 3.15-windowsservercore are versions of different runtime variants and must
+// never be treated as interchangeable merely because both parse as numbers.
+func highestCompatibleSemverTag(current string, tags []string) string {
+	cur, ok := parseSemverTag(current)
+	if !ok {
+		return ""
+	}
+	var best semver
+	found := false
+	for _, tag := range tags {
+		sv, ok := parseSemverTag(tag)
+		if !ok || sv.Major != cur.Major || !sameImageTagVariant(current, tag) ||
+			(!isPrereleaseTag(current) && isPrereleaseTag(tag)) {
+			continue
+		}
+		if !found || best.less(sv) {
+			best = sv
+			found = true
+		}
+	}
+	if !found {
+		return ""
+	}
+	return best.Raw
+}
+
+var imageVariantTokens = []string{
+	"alpine", "slim", "bookworm", "bullseye", "buster", "trixie",
+	"jammy", "noble", "debian", "ubuntu", "ubi", "fips",
+	"windowsservercore", "nanoserver", "windows", "amd64", "arm64", "armv7", "arm",
+}
+
+var (
+	prereleaseTagRe       = regexp.MustCompile(`(?i)(?:^|[-._])(?:alpha|beta|rc|pre|preview|dev|nightly)[-._]?\d*`)
+	joinedPrereleaseTagRe = regexp.MustCompile(`(?i)\d(?:alpha|beta|rc|pre|preview|dev)\d*`)
+)
+
+func isPrereleaseTag(tag string) bool {
+	return prereleaseTagRe.MatchString(strings.TrimSpace(tag)) ||
+		joinedPrereleaseTagRe.MatchString(strings.TrimSpace(tag))
+}
+
+func sameImageTagVariant(a, b string) bool {
+	return strings.Join(imageTagVariants(a), ",") == strings.Join(imageTagVariants(b), ",")
+}
+
+func imageTagVariants(tag string) []string {
+	lower := strings.ToLower(strings.TrimSpace(tag))
+	var out []string
+	for _, token := range imageVariantTokens {
+		if tagHasToken(lower, token) {
+			out = append(out, token)
+		}
+	}
+	// Numeric suffixes after a complete x.y.z core are commonly distro/package
+	// revisions (for example mailcow's 3.10.12-1). Keep that release line
+	// instead of silently switching to a tag that drops the packaging variant.
+	if sv, ok := parseSemverTag(lower); ok && sv.Pre != "" {
+		for _, field := range strings.FieldsFunc(sv.Pre, func(r rune) bool { return r == '-' || r == '.' || r == '_' }) {
+			if _, err := strconv.Atoi(field); err == nil {
+				out = append(out, "revision")
+				break
+			}
+		}
+	}
+	return out
+}
+
+func tagHasToken(tag, token string) bool {
+	for _, field := range strings.FieldsFunc(tag, func(r rune) bool {
+		return r == '-' || r == '_' || r == '.' || r == '+'
+	}) {
+		if field == token {
+			return true
+		}
+	}
+	return false
+}
+
 func imageRepoTag(image, newTag string) string {
 	reg, repo, _ := parseRef(image)
 	base := repo
@@ -375,6 +551,11 @@ func floatingOrLatest(tag string) bool {
 	tag = strings.ToLower(strings.TrimSpace(tag))
 	if floatingTags[tag] {
 		return true
+	}
+	// A versioned flavour such as 18-alpine is pinned to a release line; only
+	// the bare flavour tag alpine is floating.
+	if _, ok := parseSemverTag(tag); ok {
+		return false
 	}
 	if tag == "alpine" || tag == "slim" || strings.HasSuffix(tag, "-alpine") {
 		return true
